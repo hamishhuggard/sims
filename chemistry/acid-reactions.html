@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reactions of Acids — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script src="../lib/vessel.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+
+const ACIDS = {
+  HCl: { name: 'hydrochloric acid', formula: 'HCl', suffix: 'chloride' },
+  H2SO4: { name: 'sulfuric acid', formula: 'H₂SO₄', suffix: 'sulfate' },
+  HNO3: { name: 'nitric acid', formula: 'HNO₃', suffix: 'nitrate' }
+};
+
+/* reactant data: type drives gas/bubbles/solid shape; colour is the solid's colour */
+const REACTANTS = {
+  Mg: { name: 'magnesium', cation: 'magnesium', type: 'metal', gas: 'H2', colour: '#cbd5e1', rate: 0.12 },
+  Zn: { name: 'zinc', cation: 'zinc', type: 'metal', gas: 'H2', colour: '#9ca3af', rate: 0.35 },
+  Cu: { name: 'copper', type: 'none', colour: '#b45309' },
+  CaCO3: { name: 'calcium carbonate', cation: 'calcium', type: 'carbonate', gas: 'CO2', colour: '#f8fafc', rate: 0.2 },
+  CuCO3: { name: 'copper carbonate', cation: 'copper', type: 'carbonate', gas: 'CO2', colour: '#4ade80', rate: 0.2 },
+  NaOH: { name: 'sodium hydroxide', cation: 'sodium', type: 'base', colour: '#f1f5f9' },
+  CuO: { name: 'copper oxide', cation: 'copper', type: 'oxide', colour: '#1e293b' }
+};
+
+const GAS_NAME = { H2: 'hydrogen', CO2: 'carbon dioxide' };
+
+/* hand-balanced symbol equations, Y10 level */
+const SYMBOL = {
+  Mg: { HCl: 'Mg + 2HCl → MgCl₂ + H₂', H2SO4: 'Mg + H₂SO₄ → MgSO₄ + H₂', HNO3: 'Mg + 2HNO₃ → Mg(NO₃)₂ + H₂' },
+  Zn: { HCl: 'Zn + 2HCl → ZnCl₂ + H₂', H2SO4: 'Zn + H₂SO₄ → ZnSO₄ + H₂', HNO3: 'Zn + 2HNO₃ → Zn(NO₃)₂ + H₂' },
+  Cu: { HCl: 'no reaction', H2SO4: 'no reaction', HNO3: 'no reaction' },
+  CaCO3: { HCl: 'CaCO₃ + 2HCl → CaCl₂ + H₂O + CO₂', H2SO4: 'CaCO₃ + H₂SO₄ → CaSO₄ + H₂O + CO₂', HNO3: 'CaCO₃ + 2HNO₃ → Ca(NO₃)₂ + H₂O + CO₂' },
+  CuCO3: { HCl: 'CuCO₃ + 2HCl → CuCl₂ + H₂O + CO₂', H2SO4: 'CuCO₃ + H₂SO₄ → CuSO₄ + H₂O + CO₂', HNO3: 'CuCO₃ + 2HNO₃ → Cu(NO₃)₂ + H₂O + CO₂' },
+  NaOH: { HCl: 'NaOH + HCl → NaCl + H₂O', H2SO4: '2NaOH + H₂SO₄ → Na₂SO₄ + 2H₂O', HNO3: 'NaOH + HNO₃ → NaNO₃ + H₂O' },
+  CuO: { HCl: 'CuO + 2HCl → CuCl₂ + H₂O', H2SO4: 'CuO + H₂SO₄ → CuSO₄ + H₂O', HNO3: 'CuO + 2HNO₃ → Cu(NO₃)₂ + H₂O' }
+};
+
+function reactionInfo() {
+  const r = REACTANTS[S.reactant], a = ACIDS[S.acid];
+  if (r.type === 'none') {
+    return { salt: 'No reaction', gas: 'None', word: r.name + ' + ' + a.name + ' → <b>no reaction</b> (copper is too unreactive)' };
+  }
+  const salt = r.cation.charAt(0).toUpperCase() + r.cation.slice(1) + ' ' + a.suffix;
+  let products, gasWord = r.gas ? GAS_NAME[r.gas] : null;
+  if (r.type === 'metal') products = ['<b>' + r.cation + ' ' + a.suffix + '</b>', '<b>' + gasWord + '</b>'];
+  else if (r.type === 'carbonate') products = ['<b>' + r.cation + ' ' + a.suffix + '</b>', 'water', '<b>carbon dioxide</b>'];
+  else products = ['<b>' + r.cation + ' ' + a.suffix + '</b>', 'water'];
+  const word = r.name + ' + ' + a.name + ' → ' + products.join(' + ');
+  return { salt, gas: gasWord ? gasWord.charAt(0).toUpperCase() + gasWord.slice(1) : 'None', word };
+}
+
+const S = {
+  acid: 'HCl', reactant: 'Mg',
+  showBubbles: true, showLabels: true, showWordEq: true, showSymbolEq: true,
+  test: null // { type: 'splint'|'limewater', t0 }
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Reactions of Acids', subtitle: 'Metals, carbonates, bases & acids — drag to orbit, scroll to zoom' });
+
+const ga = ui.group('Acid');
+ui.segment(ga, null, [
+  { value: 'HCl', label: 'Hydrochloric (HCl)' },
+  { value: 'H2SO4', label: 'Sulfuric (H₂SO₄)' },
+  { value: 'HNO3', label: 'Nitric (HNO₃)' }
+], 'HCl', v => { S.acid = v; });
+
+const gr = ui.group('Add to it');
+ui.segment(gr, null, [
+  { value: 'Mg', label: 'Magnesium' },
+  { value: 'Zn', label: 'Zinc' },
+  { value: 'Cu', label: 'Copper' },
+  { value: 'CaCO3', label: 'Calcium carbonate' },
+  { value: 'CuCO3', label: 'Copper carbonate' },
+  { value: 'NaOH', label: 'Sodium hydroxide' },
+  { value: 'CuO', label: 'Copper oxide' }
+], 'Mg', v => { S.reactant = v; colourT = 0; });
+
+const gt = ui.group('Gas tests');
+ui.buttons(gt, [
+  { label: '🔥 Test gas with lit splint', onClick: () => { S.test = { type: 'splint', t0: simT }; } },
+  { label: '🥛 Bubble through limewater', onClick: () => { S.test = { type: 'limewater', t0: simT }; } }
+]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Bubbles', true, v => S.showBubbles = v);
+ui.toggle(gv, 'Labels', true, v => S.showLabels = v);
+ui.toggle(gv, 'Word equation', true, v => S.showWordEq = v);
+ui.toggle(gv, 'Symbol equation', true, v => S.showSymbolEq = v);
+
+const gRead = ui.group('Readings');
+const roSalt = ui.readout(gRead, 'Salt made', '');
+const roGas = ui.readout(gRead, 'Gas made', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 11, yaw: 0.5, pitch: 0.28 });
+
+const TUBE = { x: 0, z: 0, r: 0.9, y0: -2, y1: 2, level: 0.5 };
+const LIME = { x: 2.2, z: 0, r: 0.55, y0: -1.3, y1: 0.7, level: 0.35 };
+
+let bubbles = [];
+let bubbleTimer = 0;
+let colourT = 0;
+let simT = 0, lastT = 0;
+let limeMilky = 0; // 0..1
+
+function solidColour(r) { return r.colour; }
+
+function targetLiquidColour() {
+  const r = REACTANTS[S.reactant];
+  // copper salts tint the solution blue / blue-green as the reaction proceeds
+  if (r.cation === 'copper') {
+    return S.reactant === 'CuCO3' ? 'rgba(45,178,150,0.5)' : 'rgba(37,99,235,0.42)';
+  }
+  return 'rgba(210,225,235,0.3)';
+}
+
+function lerpColour(hexA, hexB, t) {
+  // both args are rgba(...) strings already same shape; simple channel lerp
+  const pa = hexA.match(/[\d.]+/g).map(Number), pb = hexB.match(/[\d.]+/g).map(Number);
+  const m = pa.map((v, i) => v + (pb[i] - v) * t);
+  return 'rgba(' + Math.round(m[0]) + ',' + Math.round(m[1]) + ',' + Math.round(m[2]) + ',' + m[3].toFixed(3) + ')';
+}
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t; simT += dt;
+
+  const r = REACTANTS[S.reactant];
+  const info = reactionInfo();
+
+  /* bubble spawn/step */
+  if (S.showBubbles && r.rate) {
+    bubbleTimer -= dt;
+    if (bubbleTimer <= 0) {
+      bubbles.push({ x: (Math.random() - 0.5) * 0.5, z: (Math.random() - 0.5) * 0.5, y: TUBE.y0 + 0.35, r: 0.06 + Math.random() * 0.06 });
+      bubbleTimer = r.rate;
+    }
+  }
+  for (let i = bubbles.length - 1; i >= 0; i--) {
+    bubbles[i].y += 1.1 * dt;
+    bubbles[i].x += Math.sin(simT * 3 + i) * 0.005;
+    if (bubbles[i].y >= TUBE.level) bubbles.splice(i, 1);
+  }
+  if (!S.showBubbles) bubbles.length = 0;
+
+  /* solution colour ramps toward the reaction's target */
+  if (r.cation === 'copper') colourT = Math.min(1, colourT + dt / 2.5);
+  const liquidColour = lerpColour('rgba(210,225,235,0.3)', targetLiquidColour(), colourT);
+
+  /* limewater milkiness while a limewater test with CO2 is running */
+  const testActive = S.test && (simT - S.test.t0 < 3);
+  if (!testActive) S.test = null;
+  if (S.test && S.test.type === 'limewater' && r.gas === 'CO2') {
+    limeMilky = Math.min(1, limeMilky + dt / 1.2);
+  } else {
+    limeMilky = Math.max(0, limeMilky - dt / 1.0);
+  }
+  const limeColour = lerpColour('rgba(210,225,235,0.25)', 'rgba(241,245,249,0.92)', limeMilky);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  /* bench + rack */
+  for (let g = -4; g <= 4.01; g += 2) {
+    eng.line([[g, TUBE.y0 - 0.02, -4], [g, TUBE.y0 - 0.02, 4]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-4, TUBE.y0 - 0.02, g], [4, TUBE.y0 - 0.02, g]], { color: '#eef2f7', width: 1.5 });
+  }
+  eng.box([0, TUBE.y0 - 0.15, 0], 1.3, 0.15, 0.6, '#64748b', { stroke: INK, strokeWidth: 1.5 });
+  eng.box([LIME.x, LIME.y0 - 0.12, 0], 0.8, 0.12, 0.5, '#64748b', { stroke: INK, strokeWidth: 1.5 });
+
+  /* main test tube */
+  drawBeaker(eng, { x: TUBE.x, z: TUBE.z, r: TUBE.r, y0: TUBE.y0, y1: TUBE.y1, level: TUBE.level, liquid: liquidColour });
+
+  /* solid in the tube */
+  if (r.type === 'metal') {
+    eng.box([0, TUBE.y0 + 0.9, 0], 0.14, 1.1, 0.04, solidColour(r), { stroke: INK, strokeWidth: 1.5 });
+  } else if (r.type === 'carbonate' || r.type === 'oxide' || r.type === 'base') {
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      eng.sphere([Math.cos(a) * 0.35, TUBE.y0 + 0.15, Math.sin(a) * 0.35], 0.14, solidColour(r), { stroke: INK, strokeWidth: 1 });
+    }
+  } else if (r.type === 'none') {
+    eng.box([0, TUBE.y0 + 0.5, 0], 0.16, 0.5, 0.05, solidColour(r), { stroke: INK, strokeWidth: 1.5 });
+  }
+
+  /* rising bubbles */
+  for (const b of bubbles) eng.sphere([b.x, b.y, b.z], b.r, 'rgba(255,255,255,0.15)', { stroke: 'rgba(148,163,184,0.9)', strokeWidth: 2, highlight: 'rgba(255,255,255,0.4)' });
+
+  if (S.showLabels) eng.label([TUBE.r + 0.4, TUBE.y0 + 0.4, 0], r.name, { color: '#475569', size: 15, lift: 2 });
+
+  /* limewater tube */
+  drawBeaker(eng, { x: LIME.x, z: LIME.z, r: LIME.r, y0: LIME.y0, y1: LIME.y1, level: LIME.level, liquid: limeColour, lineW: 3 });
+  if (S.showLabels) eng.label([LIME.x, LIME.y1 + 0.35, 0], 'limewater', { color: '#475569', size: 14, lift: 2 });
+
+  /* gas test animations */
+  if (S.test) {
+    const age = simT - S.test.t0;
+    if (S.test.type === 'splint') {
+      const sx = TUBE.x + 0.5, sTop = TUBE.y1 + 1.1, sBottom = TUBE.y1 + 0.2;
+      eng.line([[sx, sTop, 0], [sx, sBottom, 0]], { color: '#78350f', width: 7 });
+      if (r.gas === 'H2') {
+        const flick = 0.85 + 0.15 * Math.sin(simT * 20);
+        eng.sphere([sx, sBottom - 0.05, 0], 0.16 * flick, '#f97316', { highlight: '#fde047' });
+        if (age < 1.5 && S.showLabels) eng.label([sx + 0.5, sBottom + 0.3, 0], 'POP!', { color: '#dc2626', size: 26, weight: 900, lift: 3 });
+      } else if (r.gas === 'CO2') {
+        if (age < 0.6 && S.showLabels) eng.label([sx + 0.6, sBottom + 0.3, 0], 'splint goes out', { color: '#475569', size: 15, lift: 3 });
+      } else if (S.showLabels && age < 0.6) {
+        eng.label([sx + 0.6, sBottom + 0.3, 0], 'no gas produced', { color: '#475569', size: 15, lift: 3 });
+      }
+    }
+  }
+
+  eng.flush(ctx);
+
+  roSalt.set(info.salt);
+  roGas.set(info.gas);
+
+  let footHtml = '';
+  if (S.showWordEq) footHtml += info.word;
+  if (S.showSymbolEq) footHtml += (footHtml ? ' &nbsp;·&nbsp; ' : '') + '<b>' + SYMBOL[S.reactant][S.acid] + '</b>';
+  foot.set(footHtml);
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

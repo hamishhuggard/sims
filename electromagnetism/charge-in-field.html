@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Charge in a Magnetic Field — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', B_COL = '#7c3aed', F_COL = '#dc2626', V_COL = '#16a34a';
+const POS = '#e63946', NEG = '#2563eb';
+
+const S = {
+  sign: 1,          // +1, -1, 0 (neutral)
+  q: 1.0, m: 1.0, speed: 2.0, B: 1.0,
+  Bdir: 1,          // +1 up, -1 down
+  vy: 0,            // vertical velocity component (makes a helix)
+  running: true,
+  showField: true, showV: true, showF: true, trail: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Charge in a Magnetic Field', subtitle: 'F = Bqv → circular motion — drag to orbit, scroll to zoom' });
+
+const gc = ui.group('The charge');
+ui.segment(gc, 'Charge sign', [
+  { value: '1', label: '+ positive' },
+  { value: '-1', label: '− negative' },
+  { value: '0', label: 'neutral' }
+], '1', v => { S.sign = parseInt(v); });
+ui.slider(gc, 'Charge size |q|', { min: 0.2, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + ' C' }, v => S.q = v);
+ui.slider(gc, 'Mass m', { min: 0.2, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + ' kg' }, v => S.m = v);
+ui.slider(gc, 'Speed v', { min: 0.5, max: 4, step: 0.1, value: 2, fmt: v => v.toFixed(1) + ' m/s' }, v => { S.speed = v; });
+ui.slider(gc, 'Vertical v (helix!)', { min: 0, max: 2, step: 0.1, value: 0, fmt: v => v.toFixed(1) + ' m/s' }, v => S.vy = v);
+
+const gf = ui.group('The field');
+ui.slider(gf, 'Field strength B', { min: 0.2, max: 2.5, step: 0.1, value: 1, fmt: v => v.toFixed(1) + ' T' }, v => S.B = v);
+ui.buttons(gf, [
+  { label: '⇅ Flip B', onClick: () => { S.Bdir *= -1; } },
+  { label: '⟲ Reset particle', onClick: resetParticle },
+  { label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }
+]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Field arrows B', true, v => S.showField = v, { swatch: B_COL });
+ui.toggle(gs, 'Velocity vector v', true, v => S.showV = v, { swatch: V_COL });
+ui.toggle(gs, 'Force vector F', true, v => S.showF = v, { swatch: F_COL });
+ui.toggle(gs, 'Path trail', true, v => S.trail = v);
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roF = ui.readout(gr, 'Force F = Bqv', '');
+const roR = ui.readout(gr, 'Radius r = mv/qB', '');
+const roT = ui.readout(gr, 'Period T = 2πm/qB', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 20, yaw: 0.6, pitch: 0.5 });
+
+const BOUND = 14; // half-width of the region the particle can roam before resetting
+
+/* particle state */
+let pos, vel, trailPts;
+function resetParticle() {
+  pos = [2, -2.5, 0];
+  const h = S.speed;
+  vel = [0, S.vy, -h];
+  trailPts = [];
+}
+resetParticle();
+
+let lastT = 0, lastSpeed = S.speed, lastVy = S.vy;
+
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+
+  // keep slider changes live: rescale horizontal speed, set vertical
+  const hv = Math.hypot(vel[0], vel[2]) || 1;
+  if (Math.abs(S.speed - lastSpeed) > 1e-9) {
+    vel[0] *= S.speed / hv; vel[2] *= S.speed / hv;
+    lastSpeed = S.speed;
+  }
+  if (Math.abs(S.vy - lastVy) > 1e-9) { vel[1] = S.vy; lastVy = S.vy; }
+
+  const qB = S.sign * S.q * S.B * S.Bdir;
+  if (S.running) {
+    // exact rotation of the horizontal velocity: dω = qB/m
+    const phi = (qB / S.m) * dt;
+    const c = Math.cos(phi), s = Math.sin(phi);
+    const vx = vel[0] * c - vel[2] * s;
+    const vz = vel[0] * s + vel[2] * c;
+    vel[0] = vx; vel[2] = vz;
+    pos = v3.add(pos, v3.mul(vel, dt));
+    // keep it in the box
+    let cut = false;
+    if (pos[1] > 3.2) { pos[1] -= 6.4; cut = true; }
+    if (pos[1] < -3.2) { pos[1] += 6.4; cut = true; }
+    if (Math.abs(pos[0]) > BOUND || Math.abs(pos[2]) > BOUND) { resetParticle(); cut = true; }
+    if (cut) trailPts.push(null);
+    trailPts.push(pos.slice());
+    if (trailPts.length > 700) trailPts.splice(0, trailPts.length - 700);
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  /* field arrows: vertical, chunky, spanning the whole roamable region */
+  if (S.showField) {
+    for (let x = -BOUND + 2; x <= BOUND - 1; x += 3.5) {
+      for (let z = -BOUND + 2; z <= BOUND - 1; z += 3.5) {
+        const y0 = -2.6 * S.Bdir, y1 = 2.6 * S.Bdir;
+        eng.arrow([x, y0, z], [x, y1, z], { color: B_COL, width: 3 });
+      }
+    }
+    if (S.labels) eng.label([BOUND - 2, 3.1 * S.Bdir, BOUND - 2], 'B', { color: B_COL, size: 26, lift: 3 });
+  }
+
+  /* faint floor grid for depth */
+  for (let g = -BOUND; g <= BOUND + 0.01; g += 2.5) {
+    eng.line([[g, -3.2, -BOUND], [g, -3.2, BOUND]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-BOUND, -3.2, g], [BOUND, -3.2, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  /* trail */
+  if (S.trail && trailPts.length > 1) {
+    let chunk = [];
+    const flushChunk = () => { if (chunk.length > 1) eng.line(chunk, { color: '#94a3b8', width: 2.5 }); chunk = []; };
+    for (const p of trailPts) { if (p === null) flushChunk(); else chunk.push(p); }
+    flushChunk();
+  }
+
+  /* the particle */
+  const col = S.sign > 0 ? POS : (S.sign < 0 ? NEG : '#94a3b8');
+  eng.sphere(pos, 0.32, col, { label: S.sign > 0 ? '+' : (S.sign < 0 ? '−' : ''), stroke: INK, strokeWidth: 1.5 });
+
+  if (S.showV) {
+    const vhat = v3.norm(vel);
+    eng.arrow(v3.add(pos, v3.mul(vhat, 0.4)), v3.add(pos, v3.mul(vhat, 0.4 + 0.8 * v3.len(vel) / 2)), { color: V_COL, width: 5, label: S.labels ? 'v' : '' });
+  }
+  if (S.showF && S.sign !== 0) {
+    // F = q v × B
+    const B = [0, S.B * S.Bdir, 0];
+    const F = v3.mul(v3.cross(vel, B), S.sign * S.q);
+    const Fl = v3.len(F);
+    if (Fl > 0.01) {
+      const fhat = v3.norm(F);
+      eng.arrow(v3.add(pos, v3.mul(fhat, 0.4)), v3.add(pos, v3.mul(fhat, 0.4 + Math.min(Fl * 0.35, 2.2))), { color: F_COL, width: 5, label: S.labels ? 'F' : '' });
+    }
+  }
+
+  eng.flush(ctx);
+
+  if (S.sign === 0) {
+    roF.set('0 N (no charge!)');
+    roR.set('—'); roT.set('—');
+    foot.set('A <b>neutral</b> particle feels no magnetic force — it travels in a straight line');
+  } else {
+    const hspd = Math.hypot(vel[0], vel[2]);
+    const F = S.q * hspd * S.B;
+    roF.set(F.toFixed(2) + ' N');
+    roR.set((S.m * hspd / (S.q * S.B)).toFixed(2) + ' m');
+    roT.set((2 * Math.PI * S.m / (S.q * S.B)).toFixed(2) + ' s');
+    foot.set('F = Bqv is always ⊥ to v → it changes <i>direction</i>, not speed → <b>circular motion</b> with r = mv / qB' +
+      (S.vy > 0.05 ? ' &nbsp;(+ steady vertical drift = a <b>helix</b>)' : ''));
+  }
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

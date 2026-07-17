@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ionising Radiation &amp; Safety — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const ALPHA_COL = '#dc2626', BETA_COL = '#2563eb', GAMMA_COL = '#f59e0b';
+const SHIELD_COL = '#94a3b8';
+
+/* how far each radiation type gets through each shield, in "lanes" (0..1 = fraction of the shield thickness it penetrates before being stopped; 1 = passes through, reduced) */
+const PENETRATION = {
+  none: { alpha: 1, beta: 1, gamma: 1 },
+  paper: { alpha: 0, beta: 1, gamma: 1 },
+  aluminium: { alpha: 0, beta: 0, gamma: 0.6 },
+  lead: { alpha: 0, beta: 0, gamma: 0.15 }
+};
+const SHIELD_LABEL = { none: 'No shielding', paper: 'Paper', aluminium: 'A few mm of aluminium', lead: 'Thick lead' };
+
+const S = {
+  shield: 'none',
+  distance: 3,
+  showAlpha: true, showBeta: true, showGamma: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Ionising Radiation & Safety', subtitle: 'Penetrating power of α, β, γ — drag to orbit, scroll to zoom' });
+
+const gsh = ui.group('Shielding');
+ui.segment(gsh, null, [
+  { value: 'none', label: 'None' },
+  { value: 'paper', label: 'Paper' },
+  { value: 'aluminium', label: 'Aluminium' },
+  { value: 'lead', label: 'Lead' }
+], 'none', v => S.shield = v);
+
+const gd = ui.group('Distance');
+ui.slider(gd, 'Distance from source', { min: 1, max: 8, step: 0.5, value: 3, fmt: v => v.toFixed(1) + ' m' }, v => S.distance = v);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Alpha (α)', true, v => S.showAlpha = v, { swatch: ALPHA_COL });
+ui.toggle(gv, 'Beta (β)', true, v => S.showBeta = v, { swatch: BETA_COL });
+ui.toggle(gv, 'Gamma (γ)', true, v => S.showGamma = v, { swatch: GAMMA_COL });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roDose = ui.readout(gr, 'Relative dose at detector', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 15, yaw: 0.35, pitch: 0.2 });
+
+const LANES = [
+  { key: 'alpha', z: -1.6, col: ALPHA_COL, label: 'α (helium nucleus)' },
+  { key: 'beta', z: 0, col: BETA_COL, label: 'β (fast electron)' },
+  { key: 'gamma', z: 1.6, col: GAMMA_COL, label: 'γ (EM wave, no mass)' }
+];
+const SOURCE_X = -6, SHIELD_X = -1;
+let particles = [], spawnTimers = { alpha: 0, beta: 0, gamma: 0 };
+let simT = 0, lastT = 0;
+
+function detectorX() { return SHIELD_X + 1.2 + S.distance; }
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t; simT += dt;
+
+  const pen = PENETRATION[S.shield];
+  for (const lane of LANES) {
+    const show = { alpha: S.showAlpha, beta: S.showBeta, gamma: S.showGamma }[lane.key];
+    if (!show) continue;
+    spawnTimers[lane.key] -= dt;
+    if (spawnTimers[lane.key] <= 0) {
+      particles.push({ key: lane.key, x: SOURCE_X, z: lane.z, speed: lane.key === 'gamma' ? 6 : (lane.key === 'beta' ? 4.5 : 2.6), stopped: false, stopX: null });
+      spawnTimers[lane.key] = lane.key === 'alpha' ? 0.35 : 0.2;
+    }
+  }
+  const dX = detectorX();
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    if (!p.stopped) {
+      p.x += p.speed * dt;
+      if (p.x >= SHIELD_X && p.stopX === null) {
+        const passes = S.shield === 'none' ? true : Math.random() < pen[p.key];
+        if (!passes) { p.stopped = true; p.stopX = SHIELD_X + (Math.random() - 0.5) * 0.3; }
+      }
+    }
+    if (!p.stopped && p.x > dX + 3) particles.splice(i, 1);
+    if (p.stopped && Math.random() < 0.002) particles.splice(i, 1); // slow cleanup of stopped dots
+  }
+  if (particles.length > 400) particles.splice(0, particles.length - 400);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -3; g <= 3.01; g += 1.5) {
+    eng.line([[g, -2.2, -3], [g, -2.2, 3]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-3, -2.2, g], [3, -2.2, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  // source
+  eng.box([SOURCE_X, 0, 0], 0.35, 1.8, 1.8, '#facc15', { stroke: INK, strokeWidth: 2 });
+  if (S.labels) eng.label([SOURCE_X, 2.1, 0], 'radioactive source', { color: '#78350f', size: 15, lift: 2 });
+
+  // shield
+  if (S.shield !== 'none') {
+    const shieldCol = S.shield === 'paper' ? '#f8fafc' : (S.shield === 'aluminium' ? '#cbd5e1' : '#475569');
+    const thickness = S.shield === 'paper' ? 0.06 : (S.shield === 'aluminium' ? 0.3 : 0.65);
+    eng.box([SHIELD_X, 0, 0], thickness, 1.9, 1.9, shieldCol, { stroke: INK, strokeWidth: 2 });
+    if (S.labels) eng.label([SHIELD_X, 2.15, 0], SHIELD_LABEL[S.shield], { color: '#475569', size: 15, lift: 2 });
+  }
+
+  // detector
+  eng.box([dX, 0, 0], 0.2, 1.4, 1.4, '#1e293b', { stroke: INK, strokeWidth: 2 });
+  if (S.labels) eng.label([dX, 1.7, 0], 'detector', { color: '#475569', size: 15, lift: 2 });
+
+  for (const lane of LANES) {
+    if (S.labels) eng.label([SOURCE_X - 0.9, 0, lane.z], lane.label, { color: lane.col, size: 13, lift: 2 });
+  }
+
+  for (const p of particles) {
+    const lane = LANES.find(l => l.key === p.key);
+    const r = p.key === 'alpha' ? 0.14 : (p.key === 'beta' ? 0.09 : 0.07);
+    eng.sphere([p.x, 0, lane.z], r, lane.col, p.stopped ? { highlight: lane.col } : {});
+  }
+
+  eng.flush(ctx);
+
+  // relative dose at detector: inverse-square with distance, times whichever types get through
+  let doseSum = 0;
+  for (const key of ['alpha', 'beta', 'gamma']) {
+    const show = { alpha: S.showAlpha, beta: S.showBeta, gamma: S.showGamma }[key];
+    if (!show) continue;
+    doseSum += pen[key] / (S.distance * S.distance);
+  }
+  roDose.set(doseSum.toFixed(2) + ' (arbitrary units)');
+
+  foot.set('<b>Penetrating power:</b> α is stopped by paper/skin, β by a few mm of aluminium, γ is never fully stopped &mdash; only reduced by thick lead/concrete. ' +
+    'Dose also falls off with distance (inverse-square law) &mdash; <b>time, distance, and shielding</b> are the three ways radiation workers stay safe.');
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

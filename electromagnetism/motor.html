@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DC Motor — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', B_COL = '#7c3aed', CUR = '#d97706', F_COL = '#dc2626';
+const N_COL = '#e63946', S_COL = '#2563eb', COPPER = '#b45309';
+
+const S = {
+  I: 1.5, B: 1.0,
+  reversedI: false, reversedB: false,
+  running: true,
+  field: true, forces: true, current: true, labels: true, commutator: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'DC Motor in 3D', subtitle: 'F = BIL and the right-hand slap rule — drag to orbit, scroll to zoom' });
+
+const gv = ui.group('Values');
+ui.slider(gv, 'Current I', { min: 0, max: 3, step: 0.1, value: 1.5, fmt: v => v.toFixed(1) + ' A' }, v => S.I = v);
+ui.slider(gv, 'Field strength B', { min: 0.2, max: 2, step: 0.1, value: 1.0, fmt: v => v.toFixed(1) + ' T' }, v => S.B = v);
+ui.buttons(gv, [
+  { label: '⇄ Reverse current', onClick: () => { S.reversedI = !S.reversedI; } },
+  { label: '⇅ Swap magnets', onClick: () => { S.reversedB = !S.reversedB; } },
+  { label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }
+]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Magnetic field B', true, v => S.field = v, { swatch: B_COL });
+ui.toggle(gs, 'Force vectors F', true, v => S.forces = v, { swatch: F_COL });
+ui.toggle(gs, 'Current direction I', true, v => S.current = v, { swatch: CUR });
+ui.toggle(gs, 'Commutator & brushes', true, v => S.commutator = v);
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roF = ui.readout(gr, 'F = BIL per side', '');
+const roW = ui.readout(gr, 'Rotation speed', '');
+
+const foot = ui.footer('<b>Right-hand slap rule:</b> fingers point along <b style="color:' + B_COL + '">B</b>, thumb along <b style="color:' + CUR + '">I</b> — your palm pushes in the direction of <b style="color:' + F_COL + '">F</b>. &nbsp;&nbsp;F = BIL');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 13, yaw: 0.85, pitch: 0.35 });
+
+/* coil geometry: rotates about the z axis; uniform B along +x between the magnets */
+const a = 1.5;   // coil half-width (radius from axis)
+const b = 1.3;   // coil half-length along z
+const L = 2 * b; // active side length for F = BIL
+
+let theta = 0.6, omega = 0, lastT = 0;
+
+function rot(x, y, th) { return [x * Math.cos(th) - y * Math.sin(th), x * Math.sin(th) + y * Math.cos(th)]; }
+
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+
+  const sI = S.reversedI ? -1 : 1;
+  const sB = S.reversedB ? -1 : 1;
+
+  // commutator: current in the coil flips so torque keeps one sign
+  const comm = Math.cos(theta) >= 0 ? 1 : -1;
+  const coilI = S.I * sI * comm;
+
+  // dynamics: torque from two sides, plus drag
+  const torque = 2 * a * (S.B * sB * coilI * L) * Math.cos(theta);
+  if (S.running) {
+    omega += (torque * 2.2 - omega * 1.1) * dt;
+    theta += omega * dt;
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  /* magnets: N on the left (unless swapped) so B points +x */
+  const nLeft = sB > 0;
+  eng.box([-3.4, 0, 0], 0.45, 1.9, 1.9, nLeft ? N_COL : S_COL, { stroke: INK, strokeWidth: 2 });
+  eng.box([3.4, 0, 0], 0.45, 1.9, 1.9, nLeft ? S_COL : N_COL, { stroke: INK, strokeWidth: 2 });
+  if (S.labels) {
+    eng.label([-3.4, 2.35, 0], nLeft ? 'N' : 'S', { color: nLeft ? N_COL : S_COL, size: 30, lift: 3 });
+    eng.label([3.4, 2.35, 0], nLeft ? 'S' : 'N', { color: nLeft ? S_COL : N_COL, size: 30, lift: 3 });
+  }
+
+  /* uniform field arrows N → S */
+  if (S.field) {
+    for (const y of [-1.2, 0, 1.2]) {
+      for (const z of [-1.2, 0, 1.2]) {
+        if (Math.abs(y) < 0.1 && Math.abs(z) < 0.1) continue; // leave room for the coil axle
+        const x0 = -2.8 * sB, x1 = 2.8 * sB;
+        eng.arrow([x0, y, z], [x1, y, z], { color: B_COL, width: 3.5 });
+      }
+    }
+    if (S.labels) eng.label([0, 1.65, -1.2], 'B', { color: B_COL, size: 24, lift: 3 });
+  }
+
+  /* the coil */
+  const [ax, ay] = rot(a, 0, theta);
+  const sideA0 = [ax, ay, -b], sideA1 = [ax, ay, b];
+  const sideB0 = [-ax, -ay, b], sideB1 = [-ax, -ay, -b];
+  // conventional current path: A side runs +z when coilI > 0
+  const path = coilI >= 0
+    ? [sideA0, sideA1, sideB0, sideB1]
+    : [sideA1, sideA0, sideB1, sideB0];
+  eng.line([path[0], path[1]], { color: COPPER, width: 8 });
+  eng.line([path[1], path[2]], { color: shade(COPPER, 0.85), width: 8 });
+  eng.line([path[2], path[3]], { color: COPPER, width: 8 });
+  // axle
+  eng.line([[0, 0, -b - 1.6], [0, 0, b + 0.8]], { color: '#94a3b8', width: 4 });
+
+  /* current arrows on the two active sides */
+  if (S.current && S.I > 0.01) {
+    const mA = [ax, ay, 0], mB = [-ax, -ay, 0];
+    const dz = coilI >= 0 ? 1 : -1;
+    eng.arrow([mA[0], mA[1], -0.45 * dz], [mA[0], mA[1], 0.45 * dz], { color: CUR, width: 6, label: S.labels ? 'I' : '' });
+    eng.arrow([mB[0], mB[1], 0.45 * dz], [mB[0], mB[1], -0.45 * dz], { color: CUR, width: 6 });
+  }
+
+  /* force vectors: F = I L × B  (L along ±z, B along ±x → F along ±y) */
+  if (S.forces && S.I > 0.01) {
+    const Fmag = S.B * S.I * L;              // newtons (scaled for display)
+    const fy = (coilI >= 0 ? 1 : -1) * sB;   // side A force direction along y
+    const scale = 0.55 * Fmag;
+    const mA = [ax, ay, 0], mB = [-ax, -ay, 0];
+    eng.arrow(mA, [mA[0], mA[1] + fy * scale, mA[2]], { color: F_COL, width: 6, label: S.labels ? 'F' : '' });
+    eng.arrow(mB, [mB[0], mB[1] - fy * scale, mB[2]], { color: F_COL, width: 6, label: S.labels ? 'F' : '' });
+  }
+
+  /* commutator (split ring) + brushes + battery leads */
+  if (S.commutator) {
+    const zc = -b - 0.9, rc = 0.34;
+    for (const half of [0, 1]) {
+      const pts = [];
+      for (let i = 0; i <= 24; i++) {
+        const ang = theta + half * Math.PI + 0.18 + (i / 24) * (Math.PI - 0.36);
+        pts.push([rc * Math.cos(ang), rc * Math.sin(ang), zc]);
+      }
+      eng.line(pts, { color: half ? shade(COPPER, 0.8) : COPPER, width: 7 });
+    }
+    // brushes: fixed contacts at ±x
+    eng.box([0.62, 0, zc], 0.18, 0.14, 0.14, '#475569', { stroke: INK, strokeWidth: 1.5 });
+    eng.box([-0.62, 0, zc], 0.18, 0.14, 0.14, '#475569', { stroke: INK, strokeWidth: 1.5 });
+    // leads to a little battery
+    eng.line([[0.8, 0, zc], [1.6, -1.6, zc], [0.5, -2.1, zc]], { color: WIRE_COL(), width: 4 });
+    eng.line([[-0.8, 0, zc], [-1.6, -1.6, zc], [-0.5, -2.1, zc]], { color: WIRE_COL(), width: 4 });
+    eng.box([0, -2.1, zc], 0.5, 0.28, 0.2, '#e2e8f0', { stroke: INK, strokeWidth: 2 });
+    if (S.labels) {
+      eng.label([sI > 0 ? 0.72 : -0.72, -2.65, zc], '+', { color: N_COL, size: 22 });
+      eng.label([sI > 0 ? -0.72 : 0.72, -2.65, zc], '−', { color: INK, size: 22 });
+      eng.label([0, 0.85, zc - 0.3], 'commutator (split ring)', { color: '#475569', size: 14, lift: 3 });
+      eng.label([1.5, 0.35, zc], 'brush', { color: '#475569', size: 14, lift: 3 });
+    }
+    // wires from coil ends to the split ring halves
+    const [cx1, cy1] = rot(rc, 0, theta + Math.PI / 2);
+    eng.line([sideA0, [cx1, cy1, zc]], { color: shade(COPPER, 0.9), width: 4 });
+    eng.line([sideB1, [-cx1, -cy1, zc]], { color: shade(COPPER, 0.9), width: 4 });
+  }
+
+  if (S.labels) eng.label([0, -1.2, b + 0.6], 'armature coil', { color: '#475569', size: 14, lift: 3 });
+
+  eng.flush(ctx);
+
+  roF.set((S.B * S.I * L).toFixed(2) + ' N');
+  roW.set(Math.abs(omega * 60 / (2 * Math.PI)).toFixed(0) + ' rpm');
+  requestAnimationFrame(frame);
+}
+function WIRE_COL() { return '#334155'; }
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

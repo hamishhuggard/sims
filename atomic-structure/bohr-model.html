@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bohr Model — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const PROTON_COL = '#e63946', NEUTRON_COL = '#94a3b8', ELECTRON_COL = '#2563eb', PHOTON_COL = '#f59e0b';
+
+/* first 20 elements, simplified 2-8-8 shell filling (NZ Y10/11 level) */
+const ELEMENTS = [
+  { z: 1, name: 'Hydrogen', sym: 'H' }, { z: 2, name: 'Helium', sym: 'He' },
+  { z: 3, name: 'Lithium', sym: 'Li' }, { z: 4, name: 'Beryllium', sym: 'Be' },
+  { z: 5, name: 'Boron', sym: 'B' }, { z: 6, name: 'Carbon', sym: 'C' },
+  { z: 7, name: 'Nitrogen', sym: 'N' }, { z: 8, name: 'Oxygen', sym: 'O' },
+  { z: 9, name: 'Fluorine', sym: 'F' }, { z: 10, name: 'Neon', sym: 'Ne' },
+  { z: 11, name: 'Sodium', sym: 'Na' }, { z: 12, name: 'Magnesium', sym: 'Mg' },
+  { z: 13, name: 'Aluminium', sym: 'Al' }, { z: 14, name: 'Silicon', sym: 'Si' },
+  { z: 15, name: 'Phosphorus', sym: 'P' }, { z: 16, name: 'Sulfur', sym: 'S' },
+  { z: 17, name: 'Chlorine', sym: 'Cl' }, { z: 18, name: 'Argon', sym: 'Ar' },
+  { z: 19, name: 'Potassium', sym: 'K' }, { z: 20, name: 'Calcium', sym: 'Ca' }
+];
+
+function shellConfig(z) {
+  const shells = [];
+  let remaining = z;
+  const caps = [2, 8, 8, 2]; // simplified 2-8-8 rule through Ca (K then fills before the 3rd shell finishes in reality, but this matches the Y10 teaching simplification)
+  for (const cap of caps) {
+    if (remaining <= 0) break;
+    const take = Math.min(cap, remaining);
+    shells.push(take);
+    remaining -= take;
+  }
+  return shells;
+}
+
+const S = {
+  z: 11, // sodium — a nice one-electron-in-outer-shell example
+  showShells: true, showElectrons: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Bohr Model', subtitle: "Electron shells and energy levels (1913) — drag to orbit, scroll to zoom" });
+
+const ge = ui.group('Element');
+ui.select(ge, 'Pick an element', ELEMENTS.map(e => ({ value: String(e.z), label: e.z + '. ' + e.name + ' (' + e.sym + ')' })), '11', v => { S.z = parseInt(v, 10); });
+
+const gx = ui.group('Excite an electron');
+ui.buttons(gx, [
+  { label: '⚡ Excite electron', primary: true, onClick: () => triggerExcitation() }
+]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Shells (energy levels)', true, v => S.showShells = v);
+ui.toggle(gv, 'Electrons', true, v => S.showElectrons = v, { swatch: ELECTRON_COL });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roName = ui.readout(gr, 'Element', '');
+const roProtons = ui.readout(gr, 'Protons', '');
+const roConfig = ui.readout(gr, 'Electron configuration', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 15, yaw: 0.4, pitch: 0.5 });
+
+const SHELL_R = [1.3, 2.1, 2.8, 3.5];
+let electronPhases = []; // per (shell,index) phase offsets, rebuilt on element change
+let nucleusParticles = []; // fixed {x,y,z,color} per element, rebuilt on element change
+let lastZ = null;
+
+function rebuildPhases(shells) {
+  electronPhases = shells.map(count => {
+    const arr = [];
+    for (let i = 0; i < count; i++) arr.push((i / count) * Math.PI * 2 + Math.random() * 0.2);
+    return arr;
+  });
+}
+
+const NUCLEON_R = 0.13;
+
+/* FCC (face-centred cubic) lattice candidate positions — the densest sphere
+   packing — generated out to a generous radius so we always have enough
+   candidates for the heaviest nucleus this sim shows. */
+function fccLatticePositions() {
+  const a = NUCLEON_R * 2 * Math.SQRT2; // cell size s.t. nearest-neighbour spacing = 2r (touching)
+  const a1 = [a / 2, a / 2, 0], a2 = [a / 2, 0, a / 2], a3 = [0, a / 2, a / 2];
+  const pts = [];
+  const R = 4;
+  for (let i = -R; i <= R; i++) for (let j = -R; j <= R; j++) for (let k = -R; k <= R; k++) {
+    pts.push([
+      i * a1[0] + j * a2[0] + k * a3[0],
+      i * a1[1] + j * a2[1] + k * a3[1],
+      i * a1[2] + j * a2[2] + k * a3[2]
+    ]);
+  }
+  return pts;
+}
+const FCC_CANDIDATES = fccLatticePositions().sort((p, q) => v3.len(p) - v3.len(q));
+
+/* Greedily fill `count` lattice sites: always take the site closest to the
+   centre; when several sites are equally close (common — FCC has lots of
+   symmetric "shells"), break the tie by whichever keeps the growing cluster
+   most balanced (smallest resulting centroid magnitude) on each axis. */
+function packNucleusPositions(count) {
+  const EPS = 1e-6;
+  const selected = [];
+  const sum = [0, 0, 0];
+  let i = 0;
+  while (selected.length < count && i < FCC_CANDIDATES.length) {
+    let j = i;
+    const d0 = v3.len(FCC_CANDIDATES[i]);
+    while (j < FCC_CANDIDATES.length && Math.abs(v3.len(FCC_CANDIDATES[j]) - d0) < EPS) j++;
+    const shell = FCC_CANDIDATES.slice(i, j);
+    while (shell.length && selected.length < count) {
+      let bestIdx = 0, bestMag = Infinity;
+      for (let s = 0; s < shell.length; s++) {
+        const cand = shell[s];
+        const mag = Math.hypot(sum[0] + cand[0], sum[1] + cand[1], sum[2] + cand[2]);
+        if (mag < bestMag) { bestMag = mag; bestIdx = s; }
+      }
+      const chosen = shell.splice(bestIdx, 1)[0];
+      selected.push(chosen);
+      sum[0] += chosen[0]; sum[1] += chosen[1]; sum[2] += chosen[2];
+    }
+    i = j;
+  }
+  return selected;
+}
+
+function rebuildNucleus(z) {
+  const nucCount = Math.min(24, z * 2);
+  const protonTarget = Math.ceil(nucCount / 2);
+  const positions = packNucleusPositions(nucCount);
+  nucleusParticles = [];
+  // interleave protons/neutrons evenly through the fill order rather than
+  // grouping them, so the mix reads as a real nucleus, not two separate clumps
+  let protonsPlaced = 0;
+  for (let i = 0; i < positions.length; i++) {
+    const wantProtonRatio = protonTarget / nucCount;
+    const useProton = protonsPlaced / (i + 1) < wantProtonRatio;
+    const p = positions[i];
+    nucleusParticles.push({
+      x: p[0], y: p[1], z: p[2],
+      color: useProton ? PROTON_COL : NEUTRON_COL, isProton: useProton
+    });
+    if (useProton) protonsPlaced++;
+  }
+}
+
+/* excitation: one outer electron jumps out a shell, then falls back emitting a photon */
+let excitation = null; // { shellIdx, idx, t0, phase: 'up'|'down'|'photon' }
+let photon = null; // { t0, dir }
+let simT = 0, lastT = 0;
+
+function triggerExcitation() {
+  const shells = shellConfig(S.z);
+  const outer = shells.length - 1;
+  if (outer < 0 || shells[outer] < 1) return;
+  excitation = { shellIdx: outer, idx: 0, t0: simT };
+}
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t; simT += dt;
+
+  if (S.z !== lastZ) { rebuildPhases(shellConfig(S.z)); rebuildNucleus(S.z); lastZ = S.z; excitation = null; photon = null; }
+  const shells = shellConfig(S.z);
+  const el = ELEMENTS.find(e => e.z === S.z);
+  const nucR = 0.45 + Math.min(0.35, S.z * 0.015);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  /* nucleus: fixed cluster of protons (red, labelled +) + neutrons (grey) */
+  for (const p of nucleusParticles) {
+    eng.sphere([p.x, p.y, p.z], 0.13, p.color, p.isProton ? { label: '+', labelColor: '#fff' } : {});
+  }
+  if (S.labels) eng.label([0, -nucR - 0.4, 0], el.sym + ' nucleus (' + S.z + 'p)', { color: '#475569', size: 14, lift: 2 });
+
+  /* shells + electrons */
+  for (let s = 0; s < shells.length; s++) {
+    const r = SHELL_R[s];
+    if (S.showShells) {
+      eng.line(circlePts(r), { color: 'rgba(37,99,235,0.35)', width: 2 });
+    }
+    if (S.showElectrons) {
+      for (let i = 0; i < shells[s]; i++) {
+        let phase = electronPhases[s][i] + simT * (0.5 / (s + 1));
+        let rr = r;
+        // animate the excited electron jumping out a shell and back
+        if (excitation && excitation.shellIdx === s && excitation.idx === i) {
+          const age = simT - excitation.t0;
+          if (age < 0.5) {
+            rr = r + (SHELL_R[s + 1] || r + 0.9 - r) * 0 + (r * 0.35) * (age / 0.5);
+          } else if (age < 1.1) {
+            rr = r + r * 0.35;
+          } else if (age < 1.6) {
+            const f = (age - 1.1) / 0.5;
+            rr = r + r * 0.35 * (1 - f);
+            if (!photon) photon = { t0: simT, angle: phase };
+          } else {
+            excitation = null;
+          }
+        }
+        const x = rr * Math.cos(phase), z = rr * Math.sin(phase);
+        eng.sphere([x, 0, z], 0.15, ELECTRON_COL, { label: S.labels ? '−' : '', stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1.5 });
+      }
+    }
+    if (S.labels && S.showShells) eng.label([r + 0.25, 0, 0], 'n=' + (s + 1), { color: '#475569', size: 13, lift: 1 });
+  }
+
+  /* outgoing photon */
+  if (photon) {
+    const age = simT - photon.t0;
+    if (age < 1.0) {
+      const dist = 1.5 + age * 5;
+      const x = dist * Math.cos(photon.angle), z = dist * Math.sin(photon.angle);
+      eng.sphere([x, 0, z], 0.12, PHOTON_COL, { highlight: '#fde68a' });
+      if (S.labels) eng.label([x, 0.35, z], 'photon', { color: '#b45309', size: 14, lift: 2 });
+    } else {
+      photon = null;
+    }
+  }
+
+  eng.flush(ctx);
+
+  roName.set(el.name);
+  roProtons.set(String(S.z));
+  roConfig.set(shells.join(', '));
+
+  foot.set("Bohr's model (1913): electrons occupy <b>fixed shells</b> (energy levels) around the nucleus &mdash; " +
+    el.sym + ' is ' + shells.join('-') + '. Jumping to a higher shell absorbs energy; falling back releases it as a <b>photon of light</b>.');
+
+  requestAnimationFrame(frame);
+}
+
+function circlePts(r) {
+  const pts = [];
+  for (let i = 0; i <= 48; i++) {
+    const a = (i / 48) * Math.PI * 2;
+    pts.push([r * Math.cos(a), 0, r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

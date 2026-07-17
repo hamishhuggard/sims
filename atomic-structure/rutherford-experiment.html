@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rutherford Experiment — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const ALPHA_COL = '#dc2626', NUCLEUS_COL = '#d97706', ELECTRON_COL = '#2563eb';
+
+const S = {
+  view: 'foil', // foil | atom
+  firing: true,
+  showNucleus: true, showTrails: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Rutherford Experiment', subtitle: "The 1911 gold foil experiment — drag to orbit, scroll to zoom" });
+
+const gv2 = ui.group('View');
+ui.segment(gv2, null, [
+  { value: 'foil', label: 'Gold foil experiment' },
+  { value: 'atom', label: 'Single atom' }
+], 'foil', v => { S.view = v; });
+
+const gf = ui.group('Alpha particles');
+let fireBtn;
+const fireRow = ui.buttons(gf, [
+  { label: '⏸ Stop firing', primary: true, onClick: () => {
+      S.firing = !S.firing;
+      fireBtn.textContent = S.firing ? '⏸ Stop firing' : '▶ Fire alpha particles';
+    } }
+]);
+fireBtn = fireRow.querySelectorAll('button')[0];
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Nucleus (exaggerated size)', true, v => S.showNucleus = v, { swatch: NUCLEUS_COL });
+ui.toggle(gs, 'Particle trails', true, v => S.showTrails = v, { swatch: ALPHA_COL });
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roFired = ui.readout(gr, 'Particles fired', '0');
+const roDeflected = ui.readout(gr, 'Deflected / bounced back', '0');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 13, yaw: 0.3, pitch: 0.15 });
+
+/* --- gold foil: a plane of nuclei, mostly empty space between them --- */
+const NUCLEI = [];
+for (let iy = -2; iy <= 2; iy++) {
+  for (let iz = -2; iz <= 2; iz++) {
+    NUCLEI.push([0, iy * 1.3 + (Math.random() - 0.5) * 0.3, iz * 1.3 + (Math.random() - 0.5) * 0.3]);
+  }
+}
+const NUCLEUS_R_FOIL = 0.16;
+
+let particles = []; // { x,y,z, vx,vy,vz, targetNucleus|null, trail:[], done }
+let fired = 0, deflected = 0;
+let spawnTimer = 0;
+let simT = 0, lastT = 0;
+
+const SPEED = 4.2;
+const SCATTER_K = 0.06; // tunes how tight a miss needs to be to deflect hard
+
+function spawnParticle() {
+  // aim mostly at empty space, occasionally close to a nucleus (small impact parameter)
+  const closeShot = Math.random() < 0.35;
+  const n = NUCLEI[Math.floor(Math.random() * NUCLEI.length)];
+  let ty, tz;
+  if (closeShot) {
+    const b = (Math.random() * 0.5) * (Math.random() < 0.4 ? 1 : 0.3); // some very close
+    const a = Math.random() * Math.PI * 2;
+    ty = n[1] + Math.cos(a) * b;
+    tz = n[2] + Math.sin(a) * b;
+  } else {
+    ty = (Math.random() - 0.5) * 6.5;
+    tz = (Math.random() - 0.5) * 6.5;
+  }
+  particles.push({
+    x: -7, y: ty, z: tz, vx: SPEED, vy: 0, vz: 0,
+    scattered: false, trail: [], done: false, deflectedFlag: false
+  });
+  fired++;
+}
+
+/* Deterministic scattering, applied once as the particle crosses the foil
+   plane (x=0) — avoids integrating a 1/d² force with a variable frame dt,
+   which blows up numerically at small impact parameters. Uses the real
+   Rutherford relation: scattering angle θ = 2·atan(k/b), b = impact
+   parameter (closest distance to the nearest nucleus along the incoming
+   straight-line path). */
+function stepParticle(p, dt) {
+  if (p.done) return;
+  const prevX = p.x;
+  p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+
+  if (!p.scattered && prevX < 0 && p.x >= 0) {
+    p.scattered = true;
+    let nearest = null, b = Infinity;
+    for (const n of NUCLEI) {
+      const d = Math.hypot(p.y - n[1], p.z - n[2]);
+      if (d < b) { b = d; nearest = n; }
+    }
+    const theta = 2 * Math.atan2(SCATTER_K, Math.max(b, 0.02));
+    const ry = b > 1e-4 ? (p.y - nearest[1]) / b : 0;
+    const rz = b > 1e-4 ? (p.z - nearest[2]) / b : 1;
+    p.vx = SPEED * Math.cos(theta);
+    p.vy = SPEED * Math.sin(theta) * ry;
+    p.vz = SPEED * Math.sin(theta) * rz;
+    if (theta > 0.3) { p.deflectedFlag = true; deflected++; }
+  }
+
+  if (S.showTrails) {
+    p.trail.push([p.x, p.y, p.z]);
+    if (p.trail.length > 40) p.trail.shift();
+  }
+  if (p.x > 7 || p.x < -7.5 || Math.abs(p.y) > 6 || Math.abs(p.z) > 6) p.done = true;
+}
+
+/* --- single atom view --- */
+const ATOM_ELECTRON_N = 6;
+const atomElectrons = [];
+for (let i = 0; i < ATOM_ELECTRON_N; i++) {
+  atomElectrons.push({ r: 1.6 + Math.random() * 1.2, incl: Math.random() * Math.PI, phase: Math.random() * Math.PI * 2, speed: 0.5 + Math.random() * 0.4 });
+}
+
+function drawFoilView(dt) {
+  if (S.firing) {
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) { spawnParticle(); spawnTimer = 0.12; }
+  }
+  for (const p of particles) stepParticle(p, dt);
+  particles = particles.filter(p => !p.done || p.trail.length > 0);
+  for (const p of particles) if (p.done && p.trail.length) p.trail.shift();
+
+  /* the foil: nuclei */
+  if (S.showNucleus) {
+    for (const n of NUCLEI) eng.sphere(n, NUCLEUS_R_FOIL, NUCLEUS_COL, { stroke: INK, strokeWidth: 1 });
+  }
+  eng.poly([[0, -3.4, -3.4], [0, -3.4, 3.4], [0, 3.4, 3.4], [0, 3.4, -3.4]], 'rgba(217,119,6,0.08)', { depthBias: 0.01 });
+  if (S.labels) eng.label([0, 3.7, 0], 'gold foil (a few atoms thick)', { color: '#475569', size: 14, lift: 2 });
+
+  /* alpha particles + trails */
+  for (const p of particles) {
+    if (S.showTrails && p.trail.length > 1) {
+      eng.line(p.trail, { color: p.deflectedFlag ? 'rgba(220,38,38,0.5)' : 'rgba(220,38,38,0.25)', width: 2.5 });
+    }
+    if (!p.done) eng.sphere([p.x, p.y, p.z], 0.09, ALPHA_COL, { label: S.labels ? '' : '' });
+  }
+  if (S.labels) eng.label([-6.2, 1.6, 0], 'α particles', { color: ALPHA_COL, size: 16, lift: 2 });
+
+  roFired.set(String(fired));
+  roDeflected.set(String(deflected));
+
+  foot.set('Most &alpha; particles pass straight through &mdash; <b>the atom is mostly empty space</b>. ' +
+    'A few, aimed close to a nucleus, are strongly deflected or bounce almost straight back &mdash; ' +
+    '<b>the positive charge and mass are concentrated in a tiny, dense nucleus</b>.');
+}
+
+function drawAtomView(dt) {
+  simT += dt;
+  const nucR = 0.55;
+  eng.sphere([0, 0, 0], nucR, NUCLEUS_COL, { stroke: INK, strokeWidth: 2, label: S.labels ? '+' : '' });
+  if (S.labels) eng.label([0, -nucR - 0.35, 0], 'nucleus (+)', { color: '#475569', size: 15, lift: 2 });
+
+  for (const e of atomElectrons) {
+    const a = simT * e.speed + e.phase;
+    const x = e.r * Math.cos(a) * Math.cos(e.incl);
+    const z = e.r * Math.sin(a) * Math.cos(e.incl);
+    const y = e.r * Math.sin(e.incl) * Math.sin(a * 0.7);
+    eng.sphere([x, y, z], 0.14, ELECTRON_COL, { label: S.labels ? '−' : '' });
+  }
+  if (S.labels) eng.label([0, 2.6, 0], 'electrons somewhere around it', { color: '#475569', size: 14, lift: 2 });
+
+  foot.set("Rutherford's atom (1911): a tiny, dense, <b>positively charged nucleus</b> at the centre holds almost all the mass; " +
+    'the atom is <b>mostly empty space</b>; electrons are somewhere around it (their exact arrangement wasn&rsquo;t explained until Bohr).');
+  roFired.set('—'); roDeflected.set('—');
+}
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  if (S.view === 'foil') drawFoilView(dt); else drawAtomView(dt);
+
+  eng.flush(ctx);
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

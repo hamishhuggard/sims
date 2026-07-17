@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Doppler Effect — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', WAVE_COL = '#2563eb', SOURCE_COL = '#f59e0b';
+
+const V_SOUND = 6, BOUND = 9;
+const S = {
+  sourceSpeed: 2.5, f0: 1.2,
+  running: true,
+  showFronts: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'The Doppler Effect', subtitle: 'A moving source, and the frequency each observer hears — drag to orbit, scroll to zoom' });
+
+const gc = ui.group('Controls');
+ui.slider(gc, 'Source speed', { min: 0, max: 5, step: 0.1, value: 2.5, fmt: v => v.toFixed(1) + ' m/s' }, v => S.sourceSpeed = v);
+ui.slider(gc, 'Emitted frequency f₀', { min: 0.5, max: 2.5, step: 0.1, value: 1.2, fmt: v => v.toFixed(1) + ' Hz' }, v => S.f0 = v);
+ui.buttons(gc, [{ label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Wavefronts', true, v => S.showFronts = v, { swatch: WAVE_COL });
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roAhead = ui.readout(gr, 'Frequency heard — observer ahead', '');
+const roBehind = ui.readout(gr, 'Frequency heard — observer behind', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 20, yaw: 0.15, pitch: 0.75 });
+
+let simT = 0, lastT = 0, sourceX = -BOUND;
+let fronts = [];       // { emitX, emitT }
+let emitTimer = 0;
+
+function circlePts(cx, cz, r, segs) {
+  const pts = [];
+  for (let i = 0; i <= segs; i++) {
+    const a = 2 * Math.PI * i / segs;
+    pts.push([cx + r * Math.cos(a), 0, cz + r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+  if (S.running) {
+    simT += dt;
+    sourceX += S.sourceSpeed * dt;
+    if (sourceX > BOUND + 1) { sourceX = -BOUND - 1; fronts = []; }
+
+    emitTimer -= dt;
+    if (emitTimer <= 0) {
+      fronts.push({ emitX: sourceX, emitT: simT });
+      emitTimer = 1 / S.f0;
+    }
+    fronts = fronts.filter(f => V_SOUND * (simT - f.emitT) < 1.6 * BOUND);
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -BOUND; g <= BOUND + 0.01; g += 1.5) {
+    eng.line([[g, 0, -BOUND], [g, 0, BOUND]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-BOUND, 0, g], [BOUND, 0, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  if (S.showFronts) {
+    for (const f of fronts) {
+      const r = V_SOUND * (simT - f.emitT);
+      if (r < 0.05) continue;
+      eng.line(circlePts(f.emitX, 0, r, 40), { color: WAVE_COL, width: 2 });
+    }
+  }
+
+  const obsAheadX = BOUND - 0.6, obsBehindX = -BOUND + 0.6;
+  eng.sphere([obsAheadX, 0, 0], 0.28, '#1e293b', { stroke: INK, strokeWidth: 1.5 });
+  eng.sphere([obsBehindX, 0, 0], 0.28, '#1e293b', { stroke: INK, strokeWidth: 1.5 });
+  if (S.labels) {
+    eng.label([obsAheadX, 0.7, 0], 'observer ahead', { color: '#1e293b', size: 14, lift: 2 });
+    eng.label([obsBehindX, 0.7, 0], 'observer behind', { color: '#1e293b', size: 14, lift: 2 });
+  }
+
+  eng.sphere([sourceX, 0, 0], 0.32, SOURCE_COL, { stroke: INK, strokeWidth: 1.5 });
+  eng.arrow([sourceX - 0.5, 0, 0], [sourceX + 0.5, 0, 0], { color: SOURCE_COL, width: 3 });
+  if (S.labels) eng.label([sourceX, 0.7, 0], 'source', { color: '#78350f', size: 14, lift: 2 });
+
+  eng.flush(ctx);
+
+  const vs = Math.min(S.sourceSpeed, V_SOUND * 0.96);
+  const fAhead = S.f0 * V_SOUND / (V_SOUND - vs);
+  const fBehind = S.f0 * V_SOUND / (V_SOUND + vs);
+  roAhead.set(fAhead.toFixed(2) + ' Hz');
+  roBehind.set(fBehind.toFixed(2) + ' Hz');
+
+  foot.set('The source emits at a fixed f₀, but wavefronts bunch up <b>ahead</b> of a moving source (higher heard frequency) and spread out <b>behind</b> it (lower heard frequency) — f = f₀·v_sound / (v_sound ∓ v_source).');
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

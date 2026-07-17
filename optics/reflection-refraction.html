@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reflection &amp; Refraction — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const INCIDENT_COL = '#f59e0b', REFLECT_COL = '#dc2626', REFRACT_COL = '#2563eb', NORMAL_COL = '#94a3b8';
+
+const MEDIA = {
+  air:     { n: 1.00, label: 'Air',     color: '#f8fafc' },
+  water:   { n: 1.33, label: 'Water',   color: '#bfdbfe' },
+  glass:   { n: 1.50, label: 'Glass',   color: '#cbd5e1' },
+  diamond: { n: 2.42, label: 'Diamond', color: '#ddd6fe' }
+};
+
+const S = {
+  theta1: 40,
+  med1: 'air', med2: 'water',
+  showReflect: true, showRefract: true, showNormal: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Reflection & Refraction', subtitle: "Snell's law at a boundary — drag to orbit, scroll to zoom" });
+
+const ga = ui.group('Incident ray');
+ui.slider(ga, 'Angle of incidence θ₁', { min: 0, max: 85, step: 1, value: 40, fmt: v => v.toFixed(0) + '°' }, v => S.theta1 = v);
+
+const gm = ui.group('Media');
+ui.select(gm, 'Medium 1 (top)', Object.keys(MEDIA).map(k => ({ value: k, label: MEDIA[k].label + ' (n=' + MEDIA[k].n.toFixed(2) + ')' })), 'air', v => S.med1 = v);
+ui.select(gm, 'Medium 2 (bottom)', Object.keys(MEDIA).map(k => ({ value: k, label: MEDIA[k].label + ' (n=' + MEDIA[k].n.toFixed(2) + ')' })), 'water', v => S.med2 = v);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Reflected ray', true, v => S.showReflect = v, { swatch: REFLECT_COL });
+ui.toggle(gv, 'Refracted ray', true, v => S.showRefract = v, { swatch: REFRACT_COL });
+ui.toggle(gv, 'Normal', true, v => S.showNormal = v, { swatch: NORMAL_COL });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roT1 = ui.readout(gr, 'Angle of incidence', '');
+const roT2 = ui.readout(gr, 'Angle of refraction', '');
+const roTc = ui.readout(gr, 'Critical angle', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 17, yaw: 0.55, pitch: 0.28 });
+
+const L = 5.5;
+
+function frame(tms) {
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  const m1 = MEDIA[S.med1], m2 = MEDIA[S.med2];
+  const th1 = S.theta1 * Math.PI / 180;
+
+  // slab of medium 2 below the boundary
+  eng.box([0, -2.6, 0], 6, 2.6, 3, m2.color, { stroke: INK, strokeWidth: 2 });
+  // faint floor grid for medium 1 (above)
+  for (let g = -6; g <= 6.01; g += 2) {
+    eng.line([[g, 0.01, -3], [g, 0.01, 3]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  if (S.showNormal) {
+    eng.line([[0, 4, 0], [0, -4, 0]], { color: NORMAL_COL, width: 2.5, dash: [0.12, 0.12] });
+    if (S.labels) eng.label([0.15, 3.9, 0], 'normal', { color: NORMAL_COL, size: 13, lift: 2 });
+  }
+
+  // incident ray: comes from upper-left down to origin
+  const ix = -L * Math.sin(th1), iy = L * Math.cos(th1);
+  eng.line([[ix, iy, 0], [0, 0, 0]], { color: INCIDENT_COL, width: 4.5, arrow: true });
+  if (S.labels) eng.label([ix * 0.55, iy * 0.55 - 0.3, 0], 'incident', { color: INCIDENT_COL, size: 14, lift: 2 });
+
+  // reflected ray: mirror of incident about the normal, same medium
+  if (S.showReflect) {
+    const rx = L * Math.sin(th1), ry = L * Math.cos(th1);
+    eng.line([[0, 0, 0], [rx, ry, 0]], { color: REFLECT_COL, width: 4, arrow: true });
+    if (S.labels) eng.label([rx * 0.55, ry * 0.55 + 0.3, 0], 'reflected', { color: REFLECT_COL, size: 14, lift: 2 });
+  }
+
+  // refracted ray via Snell's law
+  const sinT2 = (m1.n / m2.n) * Math.sin(th1);
+  const tir = Math.abs(sinT2) > 1;
+  let th2 = null;
+  if (!tir) {
+    th2 = Math.asin(sinT2);
+    if (S.showRefract) {
+      const fx = L * Math.sin(th2), fy = -L * Math.cos(th2);
+      eng.line([[0, 0, 0], [fx, fy, 0]], { color: REFRACT_COL, width: 4, arrow: true });
+      if (S.labels) eng.label([fx * 0.55, fy * 0.55 - 0.3, 0], 'refracted', { color: REFRACT_COL, size: 14, lift: 2 });
+    }
+  }
+
+  if (S.labels) {
+    eng.label([-4.5, 3, 2.6], m1.label + ' (n=' + m1.n.toFixed(2) + ')', { color: '#475569', size: 15, lift: 2 });
+    eng.label([-4.5, -1, 3.4], m2.label + ' (n=' + m2.n.toFixed(2) + ')', { color: '#475569', size: 15, lift: 2 });
+  }
+
+  eng.flush(ctx);
+
+  roT1.set(S.theta1.toFixed(0) + '°');
+  if (tir) {
+    roT2.set('none — total internal reflection');
+  } else {
+    roT2.set((th2 * 180 / Math.PI).toFixed(1) + '°');
+  }
+  if (m1.n > m2.n) {
+    const thc = Math.asin(m2.n / m1.n) * 180 / Math.PI;
+    roTc.set(thc.toFixed(1) + '°');
+  } else {
+    roTc.set('n/a (n₁ ≤ n₂)');
+  }
+
+  foot.set('<b>n₁ sinθ₁ = n₂ sinθ₂</b> &mdash; light bends <i>toward</i> the normal entering a denser medium, ' +
+    '<i>away</i> from it entering a less dense one.' +
+    (tir ? ' Here θ₁ exceeds the <b>critical angle</b> — no light refracts out, it is <b>totally internally reflected</b>.' : ''));
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

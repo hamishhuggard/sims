@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meiosis &amp; Inheritance — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const PAT = '#d97706', MAT = '#7c3aed';
+const MEMBRANE = 'rgba(191,219,254,0.35)', MEMBRANE_HL = 'rgba(230,240,255,0.6)';
+
+const STAGES = [
+  { name: 'Diploid cell (2n = 4)', replicated: false, cells: 1,
+    desc: 'A diploid cell: two pairs of homologous chromosomes — one of each pair from Dad, one from Mum.' },
+  { name: 'S phase — chromosomes replicate', replicated: true, cells: 1, synapsed: false,
+    desc: 'Each chromosome is copied: two identical sister chromatids, joined at the centromere.' },
+  { name: 'Meiosis I — synapsis & crossing over', replicated: true, cells: 1, synapsed: true,
+    desc: 'Homologous pairs line up together (a tetrad). Crossing over can swap segments between non-sister chromatids — a source of genetic variation.' },
+  { name: 'Meiosis I — homologs separate', replicated: true, cells: 2,
+    desc: 'The homologous pairs separate into two cells. Independent assortment: which homolog (paternal/maternal) goes into which cell is random for each pair, independent of the others.' },
+  { name: 'Meiosis II — sister chromatids separate', replicated: false, cells: 4,
+    desc: 'Sister chromatids separate — four haploid (n = 2) gametes. Meiosis II doesn’t create new combinations; that already happened in Meiosis I.' }
+];
+
+const S = { stage: 0, crossover: true, labels: true };
+let ASSORT = { A: 1, B: -1 }; // +1 = pair's paternal homolog goes "left"/cell-even, -1 = paternal goes "right"/cell-odd
+function shuffle() { ASSORT = { A: Math.random() < 0.5 ? 1 : -1, B: Math.random() < 0.5 ? 1 : -1 }; }
+
+const ui = SimUI({ back: '../index.html', title: 'Meiosis & Inheritance', subtitle: 'From one diploid cell to four haploid gametes — drag to orbit, scroll to zoom' });
+
+const gs = ui.group('Stage');
+const btnRow = ui.buttons(gs, [
+  { label: '← Prev', onClick: () => { S.stage = Math.max(0, S.stage - 1); } },
+  { label: 'Next →', onClick: () => { S.stage = Math.min(STAGES.length - 1, S.stage + 1); } }
+]);
+ui.buttons(gs, [
+  { label: '🔀 Shuffle independent assortment', onClick: shuffle }
+]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Crossing over (at synapsis)', true, v => S.crossover = v, { swatch: '#16a34a' });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gd = ui.group('Legend');
+ui.readout(gd, 'Paternal', '').set('<span style="color:' + PAT + '">● orange</span>');
+ui.readout(gd, 'Maternal', '').set('<span style="color:' + MAT + '">● purple</span>');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 15, yaw: 0.45, pitch: 0.3 });
+
+function drawChromosome(center, dir, color, replicated, crossover) {
+  const len = 0.85;
+  const p0 = v3.sub(center, v3.mul(dir, len));
+  const p1 = v3.add(center, v3.mul(dir, len));
+  if (!replicated) { eng.line([p0, p1], { color, width: 7 }); return; }
+  const perp = v3.mul([-dir[1], dir[0], dir[2] || 0], 0.14);
+  const a0 = v3.sub(p0, perp), a1 = v3.sub(p1, perp);
+  const b0 = v3.add(p0, perp), b1 = v3.add(p1, perp);
+  eng.line([a0, a1], { color, width: 5.5 });
+  if (crossover) {
+    const mid = v3.lerp(b0, b1, 0.5);
+    eng.line([b0, mid], { color, width: 5.5 });
+    eng.line([mid, b1], { color: crossover, width: 5.5 });
+  } else {
+    eng.line([b0, b1], { color, width: 5.5 });
+  }
+  eng.line([v3.lerp(a0, a1, 0.5), v3.lerp(b0, b1, 0.5)], { color: INK, width: 3.5 });
+}
+
+function cellMembrane(center, r) {
+  eng.sphere(center, r, MEMBRANE, { highlight: MEMBRANE_HL, stroke: '#93c5fd', strokeWidth: 2.5 });
+}
+
+function frame() {
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -8; g <= 8.01; g += 2) {
+    eng.line([[g, -3.5, -8], [g, -3.5, 8]], { color: '#eef2f7', width: 1.2 });
+    eng.line([[-8, -3.5, g], [8, -3.5, g]], { color: '#eef2f7', width: 1.2 });
+  }
+
+  const st = STAGES[S.stage];
+
+  if (st.cells === 1) {
+    cellMembrane([0, 0, 0], 2.2);
+    const gap = st.synapsed ? 0.28 : 0.55;
+    const coA = st.synapsed && S.crossover;
+    drawChromosome([0, gap, 0], [1, 0, 0], PAT, st.replicated, coA ? MAT : null);
+    drawChromosome([0, -gap, 0], [1, 0, 0], MAT, st.replicated, coA ? PAT : null);
+    drawChromosome([gap, 0, 0.9], [0, 1, 0], PAT, st.replicated, coA ? MAT : null);
+    drawChromosome([-gap, 0, 0.9], [0, 1, 0], MAT, st.replicated, coA ? PAT : null);
+    if (S.labels) { eng.label([0, 2.4, 0], 'pair A', { color: INK, size: 14, lift: 2 }); eng.label([1.6, 0, 0.9], 'pair B', { color: INK, size: 14, lift: 2 }); }
+  } else if (st.cells === 2) {
+    const centers = [[-3.2, 0, 0], [3.2, 0, 0]];
+    centers.forEach((c, ci) => {
+      cellMembrane(c, 1.7);
+      const side = ci === 0 ? 1 : -1;
+      const colA = (ASSORT.A === side) ? PAT : MAT;
+      const colB = (ASSORT.B === side) ? PAT : MAT;
+      drawChromosome(v3.add(c, [0, 0.5, 0]), [1, 0, 0], colA, true, null);
+      drawChromosome(v3.add(c, [0, -0.5, 0.7]), [0, 1, 0], colB, true, null);
+    });
+    if (S.labels) { eng.label(v3.add(centers[0], [0, 2, 0]), 'cell 1', { color: INK, size: 15, lift: 2 }); eng.label(v3.add(centers[1], [0, 2, 0]), 'cell 2', { color: INK, size: 15, lift: 2 }); }
+  } else {
+    const centers = [[-4.8, 0, 0], [-1.6, 0, 0], [1.6, 0, 0], [4.8, 0, 0]];
+    centers.forEach((c, ci) => {
+      cellMembrane(c, 1.1);
+      const parentSide = ci < 2 ? 1 : -1;
+      const colA = (ASSORT.A === parentSide) ? PAT : MAT;
+      const colB = (ASSORT.B === parentSide) ? PAT : MAT;
+      drawChromosome(v3.add(c, [0, 0.35, 0]), [1, 0, 0], colA, false, null);
+      drawChromosome(v3.add(c, [0, -0.35, 0.5]), [0, 1, 0], colB, false, null);
+      if (S.labels) eng.label(v3.add(c, [0, 1.3, 0]), 'gamete ' + (ci + 1), { color: INK, size: 12, lift: 2 });
+    });
+  }
+
+  eng.flush(ctx);
+
+  foot.set('<b>' + st.name + ':</b> ' + st.desc);
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Electric Fields — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', E_COL = '#ea580c', F_COL = '#dc2626', G_COL = '#16a34a';
+const POS = '#e63946', NEG = '#2563eb';
+
+const S = {
+  preset: 'single+',
+  Q: 1,
+  testSign: 1,
+  tx: 2.6, tz: 1.8,
+  lines: true, vectors: false, test: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Electric Fields in 3D', subtitle: 'Field lines around charges, uniform fields, and the gravity analogy' });
+
+const gp = ui.group('Arrangement');
+ui.segment(gp, null, [
+  { value: 'single+', label: '+ charge' },
+  { value: 'single-', label: '− charge' },
+  { value: 'dipole', label: '+ and −' },
+  { value: 'twoplus', label: '+ and +' },
+  { value: 'plates', label: 'Charged plates' },
+  { value: 'earth', label: 'Gravity (Earth)' }
+], 'single+', v => { S.preset = v; cachedLines = null; });
+
+const gv = ui.group('Values');
+ui.slider(gv, 'Charge size Q', { min: 0.3, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + ' C' }, v => S.Q = v);
+ui.segment(gv, 'Test charge', [
+  { value: '1', label: '+ test' },
+  { value: '-1', label: '− test' }
+], '1', v => S.testSign = parseInt(v));
+ui.slider(gv, 'Test charge x', { min: -4.5, max: 4.5, step: 0.1, value: 2.6, fmt: v => v.toFixed(1) }, v => S.tx = v);
+ui.slider(gv, 'Test charge z', { min: -4.5, max: 4.5, step: 0.1, value: 1.8, fmt: v => v.toFixed(1) }, v => S.tz = v);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Field lines', true, v => S.lines = v, { swatch: E_COL });
+ui.toggle(gs, 'Field vectors (grid)', false, v => S.vectors = v, { swatch: E_COL });
+ui.toggle(gs, 'Test charge + force', true, v => S.test = v, { swatch: F_COL });
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roE = ui.readout(gr, 'Field at test point', '');
+const roF = ui.readout(gr, 'Force on test charge', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 15, yaw: 0.5, pitch: 0.35 });
+
+/* ---------- charge configurations ---------- */
+function charges() {
+  switch (S.preset) {
+    case 'single+': return [{ p: [0, 0, 0], q: 1 }];
+    case 'single-': return [{ p: [0, 0, 0], q: -1 }];
+    case 'dipole': return [{ p: [-2, 0, 0], q: 1 }, { p: [2, 0, 0], q: -1 }];
+    case 'twoplus': return [{ p: [-2, 0, 0], q: 1 }, { p: [2, 0, 0], q: 1 }];
+    default: return [];
+  }
+}
+
+function fieldAt(p, chs) {
+  if (S.preset === 'plates') {
+    return (Math.abs(p[0]) < 3.6 && Math.abs(p[1]) < 2 && Math.abs(p[2]) < 2.6) ? [0, -1, 0] : [0, 0, 0];
+  }
+  if (S.preset === 'earth') {
+    const r = v3.len(p);
+    if (r < 1.4) return [0, 0, 0];
+    return v3.mul(p, -1 / (r * r * r));
+  }
+  let E = [0, 0, 0];
+  for (const c of chs) {
+    const d = v3.sub(p, c.p);
+    const r = Math.max(v3.len(d), 0.2);
+    E = v3.add(E, v3.mul(d, c.q / (r * r * r)));
+  }
+  return E;
+}
+
+/* 14 seed directions: cube corners + axes */
+const SEED_DIRS = [];
+for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) SEED_DIRS.push(v3.norm([sx, sy, sz]));
+[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].forEach(d => SEED_DIRS.push(d));
+
+let cachedLines = null;
+function traceLines() {
+  const chs = charges();
+  const lines = [];
+  const trace = (seed, dir) => {
+    const pts = [seed.slice()];
+    let p = seed.slice();
+    for (let i = 0; i < 260; i++) {
+      let E = fieldAt(p, chs);
+      let El = v3.len(E);
+      if (El < 1e-5) break;
+      // RK2 midpoint, fixed spatial step
+      const h = 0.14;
+      const mid = v3.add(p, v3.mul(E, dir * h / (2 * El)));
+      E = fieldAt(mid, chs);
+      El = v3.len(E);
+      if (El < 1e-5) break;
+      p = v3.add(p, v3.mul(E, dir * h / El));
+      pts.push(p.slice());
+      if (v3.len(p) > 9.5) break;
+      if (chs.some(c => v3.len(v3.sub(p, c.p)) < 0.5)) { pts.push(v3.lerp(p, chs.find(c => v3.len(v3.sub(p, c.p)) < 0.75).p, 0.4)); break; }
+    }
+    return pts;
+  };
+  for (const c of chs) {
+    // trace outward from + charges, backward from lone − charges
+    if (c.q > 0) {
+      for (const d of SEED_DIRS) lines.push({ pts: trace(v3.add(c.p, v3.mul(d, 0.5)), 1), fwd: true });
+    } else if (!chs.some(o => o.q > 0)) {
+      for (const d of SEED_DIRS) lines.push({ pts: trace(v3.add(c.p, v3.mul(d, 0.5)), -1), fwd: false });
+    }
+  }
+  return lines;
+}
+
+/* a small organic blob of points, all on (not inside/outside) a sphere of
+   radius sphereR, centred near centerDir — used for the "continent" so it
+   depth-sorts as part of the globe's surface instead of a separate primitive */
+function continentPatch(centerDir, angularRadius, sphereR) {
+  const n = v3.norm(centerDir);
+  const up = Math.abs(n[1]) > 0.95 ? [1, 0, 0] : [0, 1, 0];
+  const u = v3.norm(v3.cross(up, n));
+  const v = v3.cross(n, u);
+  const pts = [];
+  const N = 10;
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const rr = angularRadius * (0.7 + 0.3 * Math.sin(a * 3 + 1));
+    const dir = v3.norm(v3.add(n, v3.add(v3.mul(u, Math.cos(a) * rr), v3.mul(v, Math.sin(a) * rr))));
+    pts.push(v3.mul(dir, sphereR * 1.01));
+  }
+  return pts;
+}
+
+function headOn(pts, frac, fwd, col) {
+  if (pts.length < 2) return;
+  const i = Math.max(1, Math.round(frac * (pts.length - 1)));
+  let a = pts[i - 1], b = pts[i];
+  if (!fwd) [a, b] = [b, a];
+  const dir = v3.norm(v3.sub(b, a));
+  const mid = v3.lerp(a, b, 0.5);
+  eng.arrow(v3.sub(mid, v3.mul(dir, 0.16)), v3.add(mid, v3.mul(dir, 0.16)), { color: col, width: 3.5 });
+}
+
+function frame() {
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+  const chs = charges();
+  const isG = S.preset === 'earth';
+  const lineCol = isG ? G_COL : E_COL;
+
+  /* sources */
+  if (S.preset === 'plates') {
+    eng.box([0, 2.15, 0], 3.6, 0.14, 2.6, POS, { stroke: INK, strokeWidth: 2 });
+    eng.box([0, -2.15, 0], 3.6, 0.14, 2.6, NEG, { stroke: INK, strokeWidth: 2 });
+    if (S.labels) {
+      eng.label([-3.2, 2.75, 0], '+ + + + +', { color: POS, size: 24, lift: 3 });
+      eng.label([-3.2, -2.8, 0], '− − − − −', { color: NEG, size: 24, lift: 3 });
+    }
+    if (S.lines) {
+      for (const x of [-2.7, -0.9, 0.9, 2.7]) for (const z of [-1.7, 0, 1.7])
+        eng.arrow([x, 1.9, z], [x, -1.9, z], { color: E_COL, width: 3.5 });
+    }
+  } else if (isG) {
+    eng.sphere([0, 0, 0], 1.3, '#3b82f6', { stroke: '#1e40af', strokeWidth: 2 });
+    // a "continent": a patch drawn flush on the sphere's surface (not a separate
+    // embedded sphere — a small sphere whose centre sits inside a bigger one
+    // depth-sorts as a whole primitive, so it renders as a floating blob instead
+    // of clipping to the globe correctly)
+    eng.poly(continentPatch([0.35, 0.55, 1.0], 0.55, 1.3), '#22c55e', { depthBias: -0.05 });
+    if (S.labels) eng.label([0, -1.9, 0], 'Earth', { color: '#1e40af', size: 20, lift: 3 });
+    if (S.lines) {
+      for (const d of SEED_DIRS) {
+        const out = v3.mul(d, 6), inn = v3.mul(d, 1.5);
+        eng.line([out, inn], { color: G_COL, width: 3 });
+        headOn([out, inn], 0.5, true, G_COL);
+      }
+    }
+  } else {
+    for (const c of chs) {
+      eng.sphere(c.p, 0.5, c.q > 0 ? POS : NEG, { label: c.q > 0 ? '+' : '−', stroke: INK, strokeWidth: 2 });
+    }
+    if (S.lines) {
+      if (!cachedLines) cachedLines = traceLines();
+      for (const ln of cachedLines) {
+        if (ln.pts.length < 2) continue;
+        eng.line(ln.pts, { color: E_COL, width: 3 });
+        headOn(ln.pts, 0.3, ln.fwd, E_COL);
+        if (ln.pts.length > 40) headOn(ln.pts, 0.75, ln.fwd, E_COL);
+      }
+    }
+  }
+
+  /* vector grid in the y = 0 plane (or x-y plane for plates) */
+  if (S.vectors) {
+    const pts = [];
+    if (S.preset === 'plates') {
+      for (const x of [-3, -1.5, 0, 1.5, 3]) for (const y of [-1.2, 0, 1.2]) pts.push([x, y, 0]);
+    } else {
+      for (let x = -4.5; x <= 4.6; x += 1.5) for (let z = -4.5; z <= 4.6; z += 1.5) pts.push([x, 0, z]);
+    }
+    for (const p of pts) {
+      if (chs.some(c => v3.len(v3.sub(p, c.p)) < 0.9) || (isG && v3.len(p) < 1.8)) continue;
+      const E = fieldAt(p, chs);
+      const El = v3.len(E);
+      if (El < 0.004) continue;
+      const len = 0.35 + Math.min(0.75, El * 2.2);
+      eng.arrow(p, v3.add(p, v3.mul(v3.norm(E), len)), { color: lineCol, width: 3 });
+    }
+  }
+
+  /* test charge / test mass */
+  let Emag = 0, Fmag = 0;
+  if (S.test) {
+    const tp = [S.tx, isG || S.preset === 'plates' ? 0 : 0, S.tz];
+    if (S.preset === 'plates') { tp[1] = S.tz * 0.4; tp[2] = 0; } // slide vertically between plates
+    const E = v3.mul(fieldAt(tp, chs), S.Q);
+    Emag = v3.len(E);
+    const F = v3.mul(E, S.testSign * (isG ? Math.abs(S.testSign) : 1));
+    Fmag = v3.len(F);
+    const col = isG ? '#a16207' : (S.testSign > 0 ? POS : NEG);
+    eng.sphere(tp, 0.28, isG ? '#a16207' : lighten(col, 0.3), { label: isG ? 'm' : (S.testSign > 0 ? '+' : '−'), stroke: INK, strokeWidth: 2 });
+    if (Fmag > 0.004) {
+      const fhat = v3.norm(isG ? E : F);
+      const flen = 0.5 + Math.min(2.2, Fmag * 3);
+      eng.arrow(v3.add(tp, v3.mul(fhat, 0.34)), v3.add(tp, v3.mul(fhat, 0.34 + flen)), { color: F_COL, width: 5, label: S.labels ? 'F' : '' });
+    }
+  }
+
+  eng.flush(ctx);
+
+  roE.set(S.preset === 'plates' ? 'uniform' : (Emag * 10).toFixed(1) + ' N/C');
+  roF.set((Fmag * 10).toFixed(1) + ' N');
+
+  const foots = {
+    'single+': 'Field lines point <b>away</b> from positive charge — the direction a small + test charge would be pushed. &nbsp;E = F / q',
+    'single-': 'Field lines point <b>towards</b> negative charge. A + test charge is pulled inward. &nbsp;E = F / q',
+    'dipole': 'Lines leave <b style="color:' + POS + '">+</b> and end on <b style="color:' + NEG + '">−</b>. They never cross!',
+    'twoplus': 'Like charges: lines push apart — there is a <b>neutral point</b> midway where E = 0',
+    'plates': 'Oppositely charged plates make a <b>uniform field</b>: &nbsp;E = V / d &nbsp;·&nbsp; F = qE &nbsp;·&nbsp; ΔE<sub>p</sub> = Eqd',
+    'earth': 'Same idea, different field: mass feels <b>F = mg</b> in a gravity field, charge feels <b>F = qE</b> in an electric field'
+  };
+  foot.set(foots[S.preset]);
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+frame();
+</script>
+</body>
+</html>

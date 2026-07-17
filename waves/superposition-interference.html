@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Superposition &amp; Interference — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', RESULT_COL = '#2563eb', P1_COL = '#e63946', P2_COL = '#16a34a';
+
+const BOUND = 8, MARGIN = 3;
+const S = {
+  sign: 'same',
+  amp: 1.0, width: 1.0, speed: 2.5,
+  showComponents: true, showResultant: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Superposition & Interference', subtitle: 'Two pulses pass through each other — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('Pulse 2 relative to pulse 1');
+ui.segment(gm, null, [
+  { value: 'same', label: 'Same side (constructive)' },
+  { value: 'opposite', label: 'Opposite side (destructive)' }
+], 'same', v => S.sign = v);
+
+const gc = ui.group('Controls');
+ui.slider(gc, 'Amplitude A', { min: 0.4, max: 1.6, step: 0.1, value: 1.0, fmt: v => v.toFixed(1) + ' m' }, v => S.amp = v);
+ui.slider(gc, 'Pulse width', { min: 0.5, max: 2, step: 0.1, value: 1.0, fmt: v => v.toFixed(1) }, v => S.width = v);
+ui.slider(gc, 'Speed v', { min: 1, max: 4, step: 0.2, value: 2.5, fmt: v => v.toFixed(1) + ' m/s' }, v => S.speed = v);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Individual pulses (dashed)', true, v => S.showComponents = v);
+ui.toggle(gs, 'Resultant (sum)', true, v => S.showResultant = v, { swatch: RESULT_COL });
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roMax = ui.readout(gr, 'Peak resultant displacement', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 14, yaw: 0.3, pitch: 0.25 });
+
+function pulse(x, c, amp, width) {
+  const dx = (x - c) / width;
+  return amp * Math.exp(-dx * dx);
+}
+
+let simT = 0, lastT = 0;
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+  simT += dt;
+
+  const half = BOUND + MARGIN;
+  const period = (2 * half) / S.speed;
+  const phase = simT % period;
+  const c1 = -half + S.speed * phase;
+  const c2 = half - S.speed * phase;
+  const amp2Sign = S.sign === 'same' ? 1 : -1;
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -BOUND; g <= BOUND + 0.01; g += 1) {
+    eng.line([[g, -2.4, -3], [g, -2.4, 3]], { color: '#eef2f7', width: 1.5 });
+  }
+  eng.line([[-BOUND, -2.4, 0], [BOUND, -2.4, 0]], { color: '#cbd5e1', width: 2 });
+
+  const N = 161;
+  const pts1 = [], pts2 = [], ptsR = [];
+  let peak = 0;
+  for (let i = 0; i < N; i++) {
+    const x = -BOUND + (2 * BOUND) * i / (N - 1);
+    const h1 = pulse(x, c1, S.amp, S.width);
+    const h2 = amp2Sign * pulse(x, c2, S.amp, S.width);
+    const r = h1 + h2;
+    if (Math.abs(r) > Math.abs(peak)) peak = r;
+    pts1.push([x, h1, 0]);
+    pts2.push([x, h2, 0]);
+    ptsR.push([x, r, 0]);
+  }
+
+  if (S.showComponents) {
+    eng.line(pts1, { color: P1_COL, width: 2.5, dash: [7, 5] });
+    eng.line(pts2, { color: P2_COL, width: 2.5, dash: [7, 5] });
+  }
+  if (S.showResultant) {
+    eng.line(ptsR, { color: RESULT_COL, width: 4.5 });
+  }
+
+  if (S.labels) {
+    eng.label([-half + 0.6, S.amp + 0.5, 0], 'pulse 1 →', { color: P1_COL, size: 14, lift: 2 });
+    eng.label([half - 0.6, amp2Sign * S.amp + 0.5 * amp2Sign, 0], '← pulse 2', { color: P2_COL, size: 14, lift: 2 });
+  }
+
+  eng.flush(ctx);
+
+  roMax.set(peak.toFixed(2) + ' m');
+
+  foot.set('<b>Superposition:</b> the resultant is simply the sum of each wave\'s displacement at every point. ' +
+    (S.sign === 'same'
+      ? 'Same-side pulses <b>add</b> — a bigger combined pulse (constructive interference).'
+      : 'Opposite-side pulses <b>cancel</b> where they overlap (destructive interference)') +
+    ' — then each pulse carries on afterwards completely unaffected, as if the other was never there.');
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

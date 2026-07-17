@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Natural Selection &amp; Evolution — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const LIGHT_COL = '#e7d8b1', DARK_COL = '#3f2e1f';
+const EATEN_COL = '#dc2626';
+
+function hexToRgb(h) { const m = h.replace('#', ''); return [parseInt(m.slice(0, 2), 16), parseInt(m.slice(2, 4), 16), parseInt(m.slice(4, 6), 16)]; }
+function rgbToHex(r, g, b) { return '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join(''); }
+function colorLerp(c0, c1, t) { const a = hexToRgb(c0), b = hexToRgb(c1); return rgbToHex(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t); }
+
+const N_POP = 50;
+const S = { background: 0.5, selection: 1.5, mutation: 0.06, running: false, showHistogram: true, showGraph: true, generation: 0 };
+
+let POP = [], history = [], eatenFlash = [], flashTimer = 0;
+
+function seedPopulation() {
+  POP = [];
+  for (let i = 0; i < N_POP; i++) POP.push({ x: (Math.random() - 0.5) * 11, z: (Math.random() - 0.5) * 11, trait: Math.random() });
+  history = [avgTrait()];
+  S.generation = 0;
+  eatenFlash = []; flashTimer = 0;
+}
+function avgTrait() { return POP.reduce((s, p) => s + p.trait, 0) / POP.length; }
+
+function runGeneration() {
+  const bg = S.background, strength = S.selection;
+  const before = POP;
+  const survivors = before.filter(ind => {
+    const mismatch = Math.abs(ind.trait - bg);
+    const deathProb = Math.min(0.95, mismatch * strength);
+    return Math.random() > deathProb;
+  });
+  eatenFlash = before.filter(ind => survivors.indexOf(ind) === -1);
+  flashTimer = 1.1;
+  const pool = survivors.length >= 2 ? survivors : before; // avoid extinction crash
+  const next = [];
+  for (let i = 0; i < N_POP; i++) {
+    const parent = pool[Math.floor(Math.random() * pool.length)];
+    let trait = parent.trait + (Math.random() - 0.5) * S.mutation * 2;
+    trait = Math.max(0, Math.min(1, trait));
+    next.push({ x: (Math.random() - 0.5) * 11, z: (Math.random() - 0.5) * 11, trait });
+  }
+  POP = next;
+  S.generation++;
+  history.push(avgTrait());
+  if (history.length > 300) history.shift();
+}
+
+seedPopulation();
+
+const ui = SimUI({ back: '../index.html', title: 'Natural Selection & Evolution', subtitle: 'Peppered-moth-style camouflage selection — drag to orbit, scroll to zoom' });
+
+const ge = ui.group('Environment');
+ui.slider(ge, 'Background darkness', { min: 0, max: 1, step: 0.05, value: 0.5, fmt: v => (v * 100).toFixed(0) + '%' }, v => S.background = v);
+ui.slider(ge, 'Selection strength', { min: 0, max: 3, step: 0.1, value: 1.5, fmt: v => v.toFixed(1) + '×' }, v => S.selection = v);
+ui.slider(ge, 'Mutation rate', { min: 0, max: 0.2, step: 0.01, value: 0.06, fmt: v => v.toFixed(2) }, v => S.mutation = v);
+
+const gr = ui.group('Run');
+const runButtons = ui.buttons(gr, [
+  { label: '▶ Run 1 generation', onClick: runGeneration },
+  { label: '⏯ Auto-run', onClick: () => { S.running = !S.running; runButtons.querySelectorAll('button')[1].textContent = S.running ? '⏸ Stop' : '⏯ Auto-run'; } },
+  { label: '⟲ Reset population', onClick: seedPopulation }
+]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Trait histogram', true, v => S.showHistogram = v);
+ui.toggle(gv, 'Average-trait graph', true, v => S.showGraph = v);
+
+const gd = ui.group('Readings');
+const roGen = ui.readout(gd, 'Generation', '0');
+const roAvg = ui.readout(gd, 'Population avg. colour', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 16, yaw: 0.5, pitch: 0.65 });
+
+let lastT = 0, autoAccum = 0;
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  if (S.running) {
+    autoAccum += dt;
+    if (autoAccum > 0.55) { autoAccum = 0; runGeneration(); }
+  }
+  if (flashTimer > 0) flashTimer = Math.max(0, flashTimer - dt);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  const groundCol = colorLerp(LIGHT_COL, DARK_COL, S.background);
+  const p00 = [-6, 0, -6], p10 = [6, 0, -6], p11 = [6, 0, 6], p01 = [-6, 0, 6];
+  eng.poly([p00, p10, p11, p01], groundCol, { stroke: INK, strokeWidth: 2 });
+
+  for (const ind of POP) {
+    const col = colorLerp(LIGHT_COL, DARK_COL, ind.trait);
+    eng.sphere([ind.x, 0.22, ind.z], 0.22, col, { stroke: INK, strokeWidth: 1 });
+  }
+  if (flashTimer > 0) {
+    const a = flashTimer / 1.1;
+    const flashCol = 'rgba(220,38,38,' + a.toFixed(2) + ')';
+    for (const ind of eatenFlash) {
+      eng.sphere([ind.x, 0.5, ind.z], 0.16, flashCol, { highlight: flashCol, stroke: INK, strokeWidth: 1 });
+    }
+  }
+
+  eng.flush(ctx);
+
+  if (S.showHistogram) drawHistogram();
+  if (S.showGraph) drawGraph();
+
+  roGen.set(String(S.generation));
+  roAvg.set((avgTrait() * 100).toFixed(0) + '% dark');
+  foot.set('Individuals whose colour <b>mismatches the background</b> are more likely to be eaten before reproducing &mdash; survivors pass on their genes, shifting the population\'s average colour toward camouflage over generations.');
+
+  requestAnimationFrame(frame);
+}
+
+function panelBox(x, y, w, h) {
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, 12); else ctx.rect(x, y, w, h);
+  ctx.fill(); ctx.stroke();
+}
+
+function drawHistogram() {
+  const gw = Math.min(360, W() * 0.35), gh = 110;
+  const gx = 20, gy = H() - 150 - 20 - gh - 10;
+  panelBox(gx, gy, gw, gh);
+  const bins = 10;
+  const counts = new Array(bins).fill(0);
+  POP.forEach(p => { const b = Math.min(bins - 1, Math.floor(p.trait * bins)); counts[b]++; });
+  const maxC = Math.max(1, ...counts);
+  const mx = gx + 14, my = gy + 22, mw = gw - 28, mh = gh - 38;
+  Draw.label(ctx, 'population colour distribution', gx + gw / 2, gy + 12, { size: 12, color: '#475569' });
+  const bw = mw / bins;
+  for (let i = 0; i < bins; i++) {
+    const h = (counts[i] / maxC) * mh;
+    ctx.fillStyle = colorLerp(LIGHT_COL, DARK_COL, (i + 0.5) / bins);
+    ctx.strokeStyle = INK; ctx.lineWidth = 1.5;
+    ctx.fillRect(mx + i * bw + 2, my + mh - h, bw - 4, Math.max(h, 1));
+    ctx.strokeRect(mx + i * bw + 2, my + mh - h, bw - 4, Math.max(h, 1));
+  }
+}
+
+function drawGraph() {
+  const gw = Math.min(360, W() * 0.35), gh = 150;
+  const gx = 20, gy = H() - gh - 20;
+  panelBox(gx, gy, gw, gh);
+  const mx = gx + 40, mw = gw - 54, my = gy + 12, mh = gh - 44;
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.lineTo(mx + mw, my + mh); ctx.stroke();
+  Draw.label(ctx, 'avg colour', gx + 20, my - 2, { size: 12, color: '#475569', align: 'left' });
+  Draw.label(ctx, 'dark', mx - 14, my + 4, { size: 11, color: '#475569', align: 'right' });
+  Draw.label(ctx, 'light', mx - 14, my + mh - 4, { size: 11, color: '#475569', align: 'right' });
+  Draw.label(ctx, 'generation →', mx + mw - 40, my + mh + 16, { size: 12, color: '#475569' });
+  // background-target line
+  const bgY = my + (1 - S.background) * mh;
+  ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.moveTo(mx, bgY); ctx.lineTo(mx + mw, bgY); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#7c3aed'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  const span = 60;
+  const start = Math.max(0, history.length - span);
+  history.slice(start).forEach((v, i) => {
+    const x = mx + (i / Math.max(1, span - 1)) * mw;
+    const y = my + (1 - v) * mh;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

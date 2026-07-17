@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wave Properties — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', WAVE_COL = '#2563eb', PARTICLE_COL = '#e63946';
+
+const S = {
+  mode: 'transverse',
+  freq: 1.0, amp: 0.8, speed: 2.0,
+  running: true,
+  showWave: true, showParticles: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Wave Properties', subtitle: 'Transverse vs longitudinal waves — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('Wave type');
+ui.segment(gm, null, [
+  { value: 'transverse', label: 'Transverse' },
+  { value: 'longitudinal', label: 'Longitudinal' }
+], 'transverse', v => S.mode = v);
+
+const gc = ui.group('Controls');
+ui.slider(gc, 'Frequency f', { min: 0.2, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + ' Hz' }, v => S.freq = v);
+ui.slider(gc, 'Amplitude A', { min: 0.2, max: 1.5, step: 0.1, value: 0.8, fmt: v => v.toFixed(1) + ' m' }, v => S.amp = v);
+ui.slider(gc, 'Wave speed v (medium)', { min: 0.5, max: 4, step: 0.1, value: 2, fmt: v => v.toFixed(1) + ' m/s' }, v => S.speed = v);
+ui.buttons(gc, [{ label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Wave curve', true, v => S.showWave = v, { swatch: WAVE_COL });
+ui.toggle(gs, 'Medium particles', true, v => S.showParticles = v, { swatch: PARTICLE_COL });
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roLambda = ui.readout(gr, 'Wavelength λ = v / f', '');
+const roT = ui.readout(gr, 'Period T = 1 / f', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 14, yaw: 0.3, pitch: 0.25 });
+
+const X0 = -7, X1 = 7, N = 141;
+let simT = 0, lastT = 0;
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+  if (S.running) simT += dt;
+
+  const lambda = S.speed / S.freq;
+  const k = 2 * Math.PI / lambda;
+  const omega = 2 * Math.PI * S.freq;
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = X0; g <= X1 + 0.01; g += 1) {
+    eng.line([[g, -2.6, -3], [g, -2.6, 3]], { color: '#eef2f7', width: 1.5 });
+  }
+  eng.line([[X0, -2.6, -3], [X1, -2.6, -3]], { color: '#eef2f7', width: 1.5 });
+  eng.line([[X0, -2.6, 3], [X1, -2.6, 3]], { color: '#eef2f7', width: 1.5 });
+
+  if (S.mode === 'transverse') {
+    if (S.showWave) {
+      const pts = [];
+      for (let i = 0; i < N; i++) {
+        const x = X0 + (X1 - X0) * i / (N - 1);
+        const y = S.amp * Math.sin(k * x - omega * simT);
+        pts.push([x, y, 0]);
+      }
+      eng.line(pts, { color: WAVE_COL, width: 4 });
+    }
+    if (S.showParticles) {
+      for (let x = X0; x <= X1 + 0.01; x += 0.7) {
+        const y = S.amp * Math.sin(k * x - omega * simT);
+        eng.sphere([x, y, 0], 0.16, PARTICLE_COL, { stroke: INK, strokeWidth: 1 });
+      }
+    }
+    if (S.labels) {
+      eng.arrow([X0 - 1.2, -2.2, 0], [X1 + 0.4, -2.2, 0], { color: INK, width: 2.5 });
+      eng.label([X1 + 0.6, -2.2, 0.3], 'direction of travel', { color: INK, size: 14, lift: 2 });
+      eng.label([X0 - 1.4, 0, 0], 'particles move ⊥ to travel', { color: PARTICLE_COL, size: 13, lift: 2, dx: 0 });
+    }
+  } else {
+    if (S.showParticles) {
+      for (let x0 = X0; x0 <= X1 + 0.01; x0 += 0.35) {
+        const d = S.amp * Math.sin(k * x0 - omega * simT);
+        eng.sphere([x0 + d, 0, 0], 0.16, PARTICLE_COL, { stroke: INK, strokeWidth: 1 });
+      }
+    }
+    if (S.showWave) {
+      const pts = [];
+      for (let i = 0; i < N; i++) {
+        const x0 = X0 + (X1 - X0) * i / (N - 1);
+        const d = S.amp * Math.sin(k * x0 - omega * simT);
+        pts.push([x0, d, -1.8]);
+      }
+      eng.line(pts, { color: WAVE_COL, width: 3, dash: [6, 4] });
+      if (S.labels) eng.label([X0 - 0.9, 0, -1.8], 'displacement d(x₀)', { color: WAVE_COL, size: 13, lift: 2 });
+    }
+    if (S.labels) {
+      eng.arrow([X0 - 1.2, -2.2, 0], [X1 + 0.4, -2.2, 0], { color: INK, width: 2.5 });
+      eng.label([X1 + 0.6, -2.2, 0.3], 'direction of travel', { color: INK, size: 14, lift: 2 });
+      eng.label([X0 - 1.4, 0.6, 0], 'particles bunch ∥ to travel', { color: PARTICLE_COL, size: 13, lift: 2 });
+    }
+  }
+
+  eng.flush(ctx);
+
+  roLambda.set(lambda.toFixed(2) + ' m');
+  roT.set((1 / S.freq).toFixed(2) + ' s');
+
+  foot.set('<b>v = f·λ</b> — for a fixed wave speed (set by the medium), increasing frequency shortens wavelength, and vice versa. ' +
+    (S.mode === 'transverse'
+      ? 'Transverse: particles oscillate <b>perpendicular</b> to the direction of travel.'
+      : 'Longitudinal: particles oscillate <b>parallel</b> to the direction of travel — bunching into compressions and rarefactions.'));
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

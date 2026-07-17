@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Punnett Squares &amp; Genetic Crosses — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const YELLOW = '#f59e0b', GREEN = '#16a34a';
+const YELLOW_TILE = '#fef3c7', GREEN_TILE = '#dcfce7';
+
+const S = { dihybrid: false, labels: true, markers: true };
+const P = { p1color: 'Yy', p1shape: 'Rr', p2color: 'Yy', p2shape: 'Rr' };
+
+const ui = SimUI({ back: '../index.html', title: 'Punnett Squares & Genetic Crosses', subtitle: 'Classic Mendel pea cross — seed colour (Y/y) & shape (R/r) — drag to orbit, scroll to zoom' });
+
+const gc = ui.group('Cross type');
+ui.segment(gc, null, [
+  { value: 'mono', label: 'Monohybrid (colour only)' },
+  { value: 'di', label: 'Dihybrid (colour + shape)' }
+], 'mono', v => S.dihybrid = (v === 'di'));
+
+const g1 = ui.group('Parent 1');
+ui.select(g1, 'Seed colour', [{ value: 'YY', label: 'YY (yellow)' }, { value: 'Yy', label: 'Yy (yellow)' }, { value: 'yy', label: 'yy (green)' }], 'Yy', v => P.p1color = v);
+ui.select(g1, 'Seed shape (dihybrid only)', [{ value: 'RR', label: 'RR (round)' }, { value: 'Rr', label: 'Rr (round)' }, { value: 'rr', label: 'rr (wrinkled)' }], 'Rr', v => P.p1shape = v);
+
+const g2 = ui.group('Parent 2');
+ui.select(g2, 'Seed colour', [{ value: 'YY', label: 'YY (yellow)' }, { value: 'Yy', label: 'Yy (yellow)' }, { value: 'yy', label: 'yy (green)' }], 'Yy', v => P.p2color = v);
+ui.select(g2, 'Seed shape (dihybrid only)', [{ value: 'RR', label: 'RR (round)' }, { value: 'Rr', label: 'Rr (round)' }, { value: 'rr', label: 'rr (wrinkled)' }], 'Rr', v => P.p2shape = v);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Genotype labels', true, v => S.labels = v);
+ui.toggle(gv, 'Phenotype markers', true, v => S.markers = v);
+
+const gr = ui.group('Ratios');
+const roPheno = ui.readout(gr, 'Phenotype ratio', '');
+const roGeno = ui.readout(gr, 'Unique genotypes', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 14, yaw: 0.3, pitch: 0.95 });
+
+function gametesForLocus(geno) {
+  const a = geno[0], b = geno[1];
+  return a === b ? [a] : [a, b];
+}
+function gametes(colorGeno, shapeGeno, dihybrid) {
+  const cg = gametesForLocus(colorGeno);
+  if (!dihybrid) return cg.map(c => ({ color: c }));
+  const sg = gametesForLocus(shapeGeno);
+  const out = [];
+  cg.forEach(c => sg.forEach(s => out.push({ color: c, shape: s })));
+  return out;
+}
+function pairGeno(a, b) { return (a === a.toUpperCase()) ? a + b : b + a; }
+function isDominant(pair) { return pair[0] === pair[0].toUpperCase() || pair[1] === pair[1].toUpperCase(); }
+
+function frame() {
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  const p1g = gametes(P.p1color, P.p1shape, S.dihybrid);
+  const p2g = gametes(P.p2color, P.p2shape, S.dihybrid);
+  const cols = p1g.length, rows = p2g.length;
+  const cell = 1.7;
+  const ox = -cols * cell / 2 + cell / 2, oz = -rows * cell / 2 + cell / 2;
+
+  for (let g = -8; g <= 8.01; g += 2) {
+    eng.line([[g, -0.02, -8], [g, -0.02, 8]], { color: '#eef2f7', width: 1 });
+    eng.line([[-8, -0.02, g], [8, -0.02, g]], { color: '#eef2f7', width: 1 });
+  }
+
+  const offspring = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cx = ox + c * cell, cz = oz + r * cell;
+      const colorPair = pairGeno(p1g[c].color, p2g[r].color);
+      const colorDom = isDominant(colorPair);
+      let shapePair = null, shapeDom = true;
+      if (S.dihybrid) { shapePair = pairGeno(p1g[c].shape, p2g[r].shape); shapeDom = isDominant(shapePair); }
+      offspring.push({ colorPair, colorDom, shapePair, shapeDom });
+
+      const tileCol = colorDom ? YELLOW_TILE : GREEN_TILE;
+      const p00 = [cx - cell / 2 + 0.05, 0, cz - cell / 2 + 0.05];
+      const p10 = [cx + cell / 2 - 0.05, 0, cz - cell / 2 + 0.05];
+      const p11 = [cx + cell / 2 - 0.05, 0, cz + cell / 2 - 0.05];
+      const p01 = [cx - cell / 2 + 0.05, 0, cz + cell / 2 - 0.05];
+      eng.poly([p00, p10, p11, p01], tileCol, { stroke: INK, strokeWidth: 2 });
+
+      if (S.markers) {
+        const mc = colorDom ? YELLOW : GREEN;
+        if (!S.dihybrid || shapeDom) {
+          eng.sphere([cx, 0.28, cz], 0.34, mc, { stroke: INK, strokeWidth: 1.5 });
+        } else {
+          eng.box([cx, 0.24, cz], 0.28, 0.24, 0.28, mc, { stroke: INK, strokeWidth: 1.5 });
+        }
+      }
+      if (S.labels) {
+        const txt = S.dihybrid ? colorPair + shapePair : colorPair;
+        eng.label([cx, 0.75, cz], txt, { color: INK, size: 15, lift: 2, weight: 800 });
+      }
+    }
+  }
+
+  // header tokens: parent 1 gametes along the top edge, parent 2 along the left edge
+  for (let c = 0; c < cols; c++) {
+    const cx = ox + c * cell, cz = oz - cell;
+    const label = S.dihybrid ? p1g[c].color + p1g[c].shape : p1g[c].color;
+    eng.sphere([cx, 0.2, cz], 0.22, '#94a3b8', { stroke: INK, strokeWidth: 1.5 });
+    eng.label([cx, 0.65, cz], label, { color: '#475569', size: 14, lift: 2, weight: 800 });
+  }
+  for (let r = 0; r < rows; r++) {
+    const cx = ox - cell, cz = oz + r * cell;
+    const label = S.dihybrid ? p2g[r].color + p2g[r].shape : p2g[r].color;
+    eng.sphere([cx, 0.2, cz], 0.22, '#94a3b8', { stroke: INK, strokeWidth: 1.5 });
+    eng.label([cx, 0.65, cz], label, { color: '#475569', size: 14, lift: 2, weight: 800 });
+  }
+  eng.label([ox - cell, 1.3, oz - cell], 'Parent 2 gametes ↓ · Parent 1 gametes →', { color: '#475569', size: 13, lift: 2, weight: 700 });
+
+  eng.flush(ctx);
+
+  // ratios
+  const phenoCounts = {};
+  const genoCounts = {};
+  offspring.forEach(o => {
+    const phKey = S.dihybrid ? (o.colorDom ? 'Yellow' : 'Green') + ' ' + (o.shapeDom ? 'Round' : 'Wrinkled') : (o.colorDom ? 'Yellow' : 'Green');
+    phenoCounts[phKey] = (phenoCounts[phKey] || 0) + 1;
+    const gKey = S.dihybrid ? o.colorPair + o.shapePair : o.colorPair;
+    genoCounts[gKey] = (genoCounts[gKey] || 0) + 1;
+  });
+  const phenoStr = Object.entries(phenoCounts).map(([k, v]) => v + ' ' + k).join(' : ');
+  roPheno.set(phenoStr);
+  roGeno.set(Object.keys(genoCounts).length + ' (' + Object.entries(genoCounts).map(([k, v]) => k + '×' + v).join(', ') + ')');
+
+  foot.set(S.dihybrid
+    ? '<b>Dihybrid cross:</b> each parent’s gametes carry one allele per gene, combined independently &mdash; the classic AaBb × AaBb cross gives a <b>9:3:3:1</b> phenotype ratio.'
+    : '<b>Monohybrid cross:</b> each parent contributes one allele; the offspring genotype is the combination in each grid cell &mdash; a heterozygous × heterozygous cross gives a <b>3:1</b> phenotype ratio.');
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Isotopes &amp; Nuclear Stability — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const PROTON_COL = '#e63946', NEUTRON_COL = '#94a3b8';
+
+const SYMBOLS = ['n', 'H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne', 'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca',
+  'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge', 'As', 'Se', 'Br', 'Kr',
+  'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn',
+  'Sb', 'Te', 'I', 'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu',
+  'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi', 'Po', 'At', 'Rn',
+  'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am'];
+
+const PRESETS = [
+  { label: 'Hydrogen-1 (protium)', z: 1, n: 0 },
+  { label: 'Hydrogen-2 (deuterium)', z: 1, n: 1 },
+  { label: 'Hydrogen-3 (tritium)', z: 1, n: 2 },
+  { label: 'Carbon-12', z: 6, n: 6 },
+  { label: 'Carbon-14', z: 6, n: 8 },
+  { label: 'Oxygen-16', z: 8, n: 8 },
+  { label: 'Cobalt-60', z: 27, n: 33 },
+  { label: 'Uranium-235', z: 92, n: 143 },
+  { label: 'Uranium-238', z: 92, n: 146 }
+];
+
+const S = { z: 6, n: 6, labels: true, showChart: true };
+
+const ui = SimUI({ back: '../index.html', title: 'Isotopes & Nuclear Stability', subtitle: 'Same element, different neutron count — drag to orbit, scroll to zoom' });
+
+const gp = ui.group('Nucleus');
+ui.select(gp, 'Quick isotope', PRESETS.map(p => ({ value: p.label, label: p.label })), 'Carbon-12', v => {
+  const p = PRESETS.find(p => p.label === v);
+  if (p) { zSlider.set(p.z); nSlider.set(p.n); }
+});
+const zSlider = ui.slider(gp, 'Protons (Z)', { min: 1, max: 95, step: 1, value: 6, fmt: v => Math.round(v) }, v => S.z = Math.round(v));
+const nSlider = ui.slider(gp, 'Neutrons (N)', { min: 0, max: 150, step: 1, value: 6, fmt: v => Math.round(v) }, v => S.n = Math.round(v));
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Band-of-stability chart', true, v => S.showChart = v);
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roSym = ui.readout(gr, 'Isotope', '');
+const roA = ui.readout(gr, 'Mass number A', '');
+const roStable = ui.readout(gr, 'Likely behaviour', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 10, yaw: 0.5, pitch: 0.35 });
+
+/* rough stability classification: the "band of stability" widens (more
+   neutrons per proton) as Z grows; N/Z ~1 for light elements, ~1.5 by Z~80 */
+function stabilityBand(z) {
+  const idealRatio = 1 + z / 94; // ~1.0 at Z=1 rising to ~1.5 near Z=94
+  return z * idealRatio;
+}
+function classify(z, n) {
+  if (z > 82) return { label: 'Unstable — too heavy, likely alpha decay', col: '#dc2626' };
+  const idealN = stabilityBand(z);
+  const diff = n - idealN;
+  const tolerance = 1.2 + z * 0.06;
+  if (Math.abs(diff) <= tolerance) return { label: 'Stable', col: '#16a34a' };
+  if (diff > tolerance) return { label: 'Neutron-rich — likely beta-minus decay (n → p)', col: '#2563eb' };
+  return { label: 'Proton-rich — likely beta-plus decay / electron capture', col: '#e63946' };
+}
+
+let nucleusParticles = [], lastZ = -1, lastN = -1;
+function rebuildNucleus(z, n) {
+  const total = z + n;
+  nucleusParticles = [];
+  const r0 = 0.45 + Math.min(0.7, total * 0.018);
+  for (let i = 0; i < Math.min(70, total); i++) {
+    const a = (i / Math.min(70, total)) * Math.PI * 2;
+    const rr = r0 * 0.6 * Math.sqrt(Math.random());
+    const yy = (Math.random() - 0.5) * r0 * 0.7;
+    const isProton = i < Math.round(z / total * Math.min(70, total));
+    nucleusParticles.push({ x: Math.cos(a) * rr, y: yy, z: Math.sin(a) * rr, isProton });
+  }
+}
+rebuildNucleus(S.z, S.n);
+
+function frame() {
+  if (S.z !== lastZ || S.n !== lastN) { rebuildNucleus(S.z, S.n); lastZ = S.z; lastN = S.n; }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  const r0 = 0.45 + Math.min(0.7, (S.z + S.n) * 0.018);
+  for (const p of nucleusParticles) {
+    eng.sphere([p.x, p.y, p.z], 0.16, p.isProton ? PROTON_COL : NEUTRON_COL, p.isProton ? { label: '+' } : {});
+  }
+
+  const sym = SYMBOLS[S.z] || ('Z=' + S.z);
+  const A = S.z + S.n;
+  if (S.labels) {
+    eng.label([0, -r0 - 0.5, 0], A + sym, { color: INK, size: 26, lift: 2, weight: 900 });
+    eng.label([0, -r0 - 0.95, 0], 'A = Z + N = ' + S.z + ' + ' + S.n, { color: '#475569', size: 14, lift: 2 });
+  }
+
+  eng.flush(ctx);
+
+  if (S.showChart) drawStabilityChart();
+
+  roSym.set(A + sym);
+  roA.set(String(A));
+  const cls = classify(S.z, S.n);
+  roStable.set(cls.label);
+
+  foot.set('<b>' + sym + '-' + A + '</b>: ' + S.z + ' protons, ' + S.n + ' neutrons. Isotopes of the same element (same Z) have ' +
+    'different N &mdash; same chemistry, different mass and (often) different stability. <b>' + cls.label + '</b>');
+
+  requestAnimationFrame(frame);
+}
+
+function drawStabilityChart() {
+  const gw = Math.min(420, W() * 0.4), gh = 220;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)'; ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  const maxZ = Math.max(30, S.z * 1.15), maxN = Math.max(45, S.n * 1.15);
+  const mx = gx + 40, mw = gw - 54, my = gy + 14, mh = gh - 36;
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.lineTo(mx + mw, my + mh); ctx.stroke();
+  Draw.label(ctx, 'Z (protons)', gx + 10, my - 2, { size: 12, color: '#475569', align: 'left' });
+  Draw.label(ctx, 'N (neutrons) →', mx + mw - 55, gy + gh - 8, { size: 12, color: '#475569' });
+
+  // stability band (shaded)
+  ctx.fillStyle = 'rgba(22,163,74,0.15)';
+  ctx.beginPath();
+  for (let z = 0; z <= maxZ; z++) {
+    const idealN = stabilityBand(z);
+    const tol = 1.2 + z * 0.06;
+    const x = mx + ((idealN + tol) / maxN) * mw, y = my + mh - (z / maxZ) * mh;
+    if (z === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  for (let z = maxZ; z >= 0; z--) {
+    const idealN = stabilityBand(z);
+    const tol = 1.2 + z * 0.06;
+    const x = mx + Math.max(0, idealN - tol) / maxN * mw, y = my + mh - (z / maxZ) * mh;
+    ctx.lineTo(x, y);
+  }
+  ctx.closePath(); ctx.fill();
+
+  // current nuclide point
+  const px = mx + Math.min(1, S.n / maxN) * mw, py = my + mh - Math.min(1, S.z / maxZ) * mh;
+  ctx.fillStyle = classify(S.z, S.n).col;
+  ctx.beginPath(); ctx.arc(px, py, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.stroke();
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

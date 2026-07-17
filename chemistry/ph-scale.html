@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pH &amp; Indicators — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script src="../lib/vessel.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const H_COL = '#e63946', OH_COL = '#2563eb', OH_H_COL = '#93c5fd';
+
+const SUBSTANCES = [
+  { label: 'Hydrochloric acid', ph: 1 },
+  { label: 'Stomach acid', ph: 2 },
+  { label: 'Lemon juice', ph: 2.5 },
+  { label: 'Vinegar', ph: 3 },
+  { label: 'Fizzy drink', ph: 4 },
+  { label: 'Black coffee', ph: 5 },
+  { label: 'Milk', ph: 6.5 },
+  { label: 'Pure water', ph: 7 },
+  { label: 'Blood', ph: 7.4 },
+  { label: 'Seawater', ph: 8 },
+  { label: 'Baking soda', ph: 9 },
+  { label: 'Soap', ph: 10 },
+  { label: 'Ammonia', ph: 11 },
+  { label: 'Bleach', ph: 12.5 },
+  { label: 'Oven cleaner (NaOH)', ph: 14 }
+];
+
+/* universal indicator ramp, index = round(pH), 0..14 */
+const UNIVERSAL = ['#c81d25', '#e01b24', '#f04e23', '#f68b1f', '#fbba16', '#f7e017', '#c6d92d',
+  '#4cae4f', '#3aa17e', '#2e9599', '#2273b5', '#2a52a1', '#31408f', '#3a2f7d', '#46266b'];
+
+function classify(ph) {
+  if (ph < 3) return 'strong acid';
+  if (ph < 6.5) return 'weak acid';
+  if (ph > 6.5 && ph < 7.5) return 'neutral';
+  if (ph <= 11) return 'weak alkali';
+  return 'strong alkali';
+}
+
+const S = {
+  ph: 7,
+  indicator: 'none', // none | universal | red-litmus | blue-litmus | phenolphthalein
+  showH: true, showOH: true, showWater: true, showBar: true, labels: true,
+  labelledIons: false, // false = accurate molecule models (bare H+, bonded O-H for OH-); true = simple labelled spheres
+  sizeMul: 1, countMul: 1
+};
+
+const ui = SimUI({ back: '../index.html', title: 'pH & Indicators', subtitle: 'Acids release H⁺, bases release OH⁻ — drag to orbit, scroll to zoom' });
+
+const gs = ui.group('Substance');
+ui.select(gs, 'Pick a substance', SUBSTANCES.map(s => ({ value: s.label, label: s.label + ' (pH ' + s.ph + ')' })), 'Pure water', v => {
+  const sub = SUBSTANCES.find(s => s.label === v);
+  if (sub) phSlider.set(sub.ph);
+});
+const phSlider = ui.slider(gs, 'pH', { min: 0, max: 14, step: 0.5, value: 7, fmt: v => v.toFixed(1) }, v => S.ph = v);
+
+const gi = ui.group('Indicator');
+ui.segment(gi, null, [
+  { value: 'none', label: 'None' },
+  { value: 'universal', label: 'Universal' },
+  { value: 'red-litmus', label: 'Red litmus' },
+  { value: 'blue-litmus', label: 'Blue litmus' },
+  { value: 'phenolphthalein', label: 'Phenolphthalein' }
+], 'none', v => S.indicator = v);
+
+const gp = ui.group('Particles');
+ui.toggle(gp, 'Labelled spheres (vs molecule models)', false, v => S.labelledIons = v);
+ui.slider(gp, 'Particle size', { min: 0.4, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.sizeMul = v);
+ui.slider(gp, 'Number of particles', { min: 0.3, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.countMul = v);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'H⁺ ions', true, v => S.showH = v, { swatch: H_COL });
+ui.toggle(gv, 'OH⁻ ions', true, v => S.showOH = v, { swatch: OH_COL });
+ui.toggle(gv, 'Water molecules', true, v => S.showWater = v, { swatch: '#94a3b8' });
+ui.toggle(gv, 'pH scale bar', true, v => S.showBar = v);
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roPH = ui.readout(gr, 'pH', '');
+const roClass = ui.readout(gr, 'Classification', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 10.5, yaw: 0.5, pitch: 0.3 });
+
+const VESSEL = { r: 1.8, y0: -1.6, y1: 1.4, level: 0.8 };
+const swarm = ParticleSwarm({ r: VESSEL.r * 0.9, y0: VESSEL.y0 + 0.1, y1: VESSEL.level - 0.1 });
+
+function liquidColour() {
+  if (S.indicator === 'universal') {
+    return hexToRgba(UNIVERSAL[Math.round(S.ph)], 0.55);
+  }
+  if (S.indicator === 'phenolphthalein') {
+    return S.ph > 8.3 ? 'rgba(236,72,153,0.5)' : 'rgba(210,225,235,0.35)';
+  }
+  return 'rgba(180,205,225,0.4)'; // pale blue-grey default (also litmus: don't tint)
+}
+
+function hexToRgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + [(n >> 16) & 255, (n >> 8) & 255, n & 255].join(',') + ',' + a + ')';
+}
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  const ph = S.ph;
+  const nH = Math.max(0, Math.min(50, Math.round(6 * S.countMul * Math.pow(10, (7 - ph) / 2.6))));
+  const nOH = Math.max(0, Math.min(50, Math.round(6 * S.countMul * Math.pow(10, (ph - 7) / 2.6))));
+
+  // real relative scale, exaggerated just enough to stay visible: a bare H+
+  // (a proton with no electron cloud) is dramatically smaller than a whole
+  // molecule like OH- or H2O — orbit/zoom in to see the H+ dust properly.
+  // In "labelled spheres" mode both ions get a bigger, uniform, readable size.
+  const hR = (S.labelledIons ? 0.09 : 0.018) * S.sizeMul;
+  const oR = (S.labelledIons ? 0.09 : 0.05) * S.sizeMul;
+  const hydR = 0.026 * S.sizeMul;
+  swarm.want('H+', { n: S.showH ? nH : 0, radius: hR, speed: 0.8 });
+  swarm.want('OH-', { n: S.showOH ? nOH : 0, radius: oR, speed: 0.7 });
+  swarm.want('H2O', { n: S.showWater ? Math.round(35 * S.countMul) : 0, radius: 0.04 * S.sizeMul, speed: 0.5 });
+  swarm.step(dt);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  /* bench grid */
+  for (let g = -4; g <= 4.01; g += 2) {
+    eng.line([[g, -1.62, -4], [g, -1.62, 4]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-4, -1.62, g], [4, -1.62, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  drawBeaker(eng, Object.assign({}, VESSEL, { liquid: liquidColour(), lip: true }));
+
+  /* H2O : small, unlabelled background molecules */
+  for (const pt of swarm.list('H2O')) {
+    eng.sphere(pt.p, 0.04 * S.sizeMul, '#cbd5e1');
+  }
+
+  if (S.labelledIons) {
+    /* simplified: one uniform, clearly labelled sphere per ion */
+    for (const pt of swarm.list('H+')) {
+      eng.sphere(pt.p, hR, H_COL, S.labels ? { label: 'H⁺', stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1.5 } : {});
+    }
+    for (const pt of swarm.list('OH-')) {
+      eng.sphere(pt.p, oR, OH_COL, S.labels ? { label: 'OH⁻', stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1.5 } : {});
+    }
+  } else {
+    /* H+ : a bare proton — tiny dust, labelled */
+    for (const pt of swarm.list('H+')) {
+      eng.sphere(pt.p, hR, H_COL, S.labels ? { label: '+', stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1 } : {});
+    }
+    /* OH- : an actual two-atom molecule — O (bigger, labelled) bonded to a
+       smaller H, oriented along its current heading so it tumbles naturally */
+    for (const pt of swarm.list('OH-')) {
+      const dir = v3.len(pt.v) > 0.01 ? v3.norm(pt.v) : [1, 0, 0];
+      const hPos = v3.add(pt.p, v3.mul(dir, oR + hydR + 0.015));
+      eng.line([pt.p, hPos], { color: OH_COL, width: 2 });
+      eng.sphere(hPos, hydR, OH_H_COL, { stroke: 'rgba(26,26,46,0.25)', strokeWidth: 1 });
+      eng.sphere(pt.p, oR, OH_COL, S.labels ? { label: '−', stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1 } : {});
+    }
+  }
+
+  /* litmus paper strip, dipped into the beaker */
+  if (S.indicator === 'red-litmus' || S.indicator === 'blue-litmus') {
+    const isRed = S.indicator === 'red-litmus';
+    const turned = isRed ? (ph > 8.3) : (ph < 6.5); // red litmus turns blue in alkali; blue litmus turns red in acid
+    const baseCol = isRed ? '#e63946' : '#2563eb';
+    const changedCol = isRed ? '#2563eb' : '#e63946';
+    const sv = sideVec(eng);
+    const sx = sv[0] * 1.1, sz = sv[2] * 1.1;
+    const stripTop = VESSEL.y1 + 0.6, stripBottom = VESSEL.y0 + 0.3;
+    const submergedY = VESSEL.level - 0.05;
+    // dry (upper) half — always the original colour
+    eng.line([[sx, stripTop, sz], [sx, submergedY, sz]], { color: baseCol, width: 8 });
+    // submerged half — turns colour if past the threshold
+    eng.line([[sx, submergedY, sz], [sx, stripBottom, sz]], { color: turned ? changedCol : baseCol, width: 8 });
+    eng.line([[sx, stripTop, sz], [sx, stripBottom, sz]], { color: INK, width: 1, dash: [4, 4] });
+    if (S.labels) eng.label([sx, stripTop + 0.3, sz], isRed ? 'red litmus' : 'blue litmus', { color: '#475569', size: 15, lift: 2 });
+  }
+
+  eng.flush(ctx);
+
+  /* pH scale bar — 2D overlay above the footer */
+  if (S.showBar) drawPHBar();
+
+  roPH.set(ph.toFixed(1));
+  const cls = classify(ph);
+  roClass.set(cls.charAt(0).toUpperCase() + cls.slice(1));
+
+  const dominant = ph < 7 ? 'more H⁺ than OH⁻' : (ph > 7 ? 'more OH⁻ than H⁺' : 'equal H⁺ and OH⁻');
+  const kind = ph < 7 ? 'Acids release hydrogen ions (H⁺) in water.' : (ph > 7 ? 'Bases release hydroxide ions (OH⁻) in water.' : 'Pure water is neutral.');
+  foot.set('pH ' + ph.toFixed(1) + ' — <b>' + cls + '</b>: ' + dominant + '. ' + kind);
+
+  requestAnimationFrame(frame);
+}
+
+function drawPHBar() {
+  const barW = Math.min(760, W() * 0.75), barH = 46;
+  const bx = (W() - barW) / 2, by = H() - barH - 92;
+  const cellW = barW / 15;
+
+  for (let i = 0; i <= 14; i++) {
+    ctx.fillStyle = UNIVERSAL[i];
+    ctx.fillRect(bx + i * cellW, by, cellW, barH);
+  }
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.strokeRect(bx, by, barW, barH);
+  for (let i = 1; i <= 14; i++) {
+    ctx.beginPath(); ctx.moveTo(bx + i * cellW, by); ctx.lineTo(bx + i * cellW, by + barH); ctx.strokeStyle = 'rgba(26,26,46,0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  for (let i = 0; i <= 14; i += 2) {
+    Draw.label(ctx, String(i), bx + i * cellW + cellW / 2, by + barH + 16, { size: 14, color: INK, weight: 700 });
+  }
+  Draw.label(ctx, 'ACID', bx + 3.5 * cellW, by - 14, { size: 15, color: '#c81d25', weight: 800 });
+  Draw.label(ctx, 'NEUTRAL', bx + 7 * cellW, by - 14, { size: 15, color: '#3aa17e', weight: 800 });
+  Draw.label(ctx, 'ALKALI', bx + 10.5 * cellW, by - 14, { size: 15, color: '#31408f', weight: 800 });
+
+  // fat pointer at the current pH
+  const px = bx + S.ph * cellW;
+  ctx.beginPath();
+  ctx.moveTo(px - 12, by - 4);
+  ctx.lineTo(px + 12, by - 4);
+  ctx.lineTo(px, by + 10);
+  ctx.closePath();
+  ctx.fillStyle = INK;
+  ctx.fill();
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

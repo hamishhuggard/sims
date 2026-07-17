@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Electromagnetic Induction — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', B_COL = '#7c3aed', CUR = '#d97706', F_COL = '#dc2626', V_COL = '#16a34a';
+const N_COL = '#e63946', S_COL = '#2563eb', COPPER = '#b45309', RAIL = '#334155';
+
+const S = {
+  mode: 'rails',          // rails | generator
+  // rails
+  v: 1.6, L: 2.0, B: 1.0, Bdir: 1,
+  // generator
+  omega: 2.5, turns: 1, gen: 'ac',
+  running: true,
+  showField: true, showForce: true, showCurrent: true, showFlux: true, showGraph: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Electromagnetic Induction', subtitle: 'V = BvL, Lenz’s law, and the generator — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('Setup');
+ui.segment(gm, null, [
+  { value: 'rails', label: 'Rod on rails (V = BvL)' },
+  { value: 'generator', label: 'Generator' }
+], 'rails', v => { S.mode = v; samples.length = 0; });
+ui.segment(gm, 'Generator type', [
+  { value: 'ac', label: 'AC (slip rings)' },
+  { value: 'dc', label: 'DC (commutator)' }
+], 'ac', v => { S.gen = v; samples.length = 0; });
+
+const gv = ui.group('Values');
+ui.slider(gv, 'Rod speed v', { min: -3, max: 3, step: 0.1, value: 1.6, fmt: v => v.toFixed(1) + ' m/s' }, v => S.v = v);
+ui.slider(gv, 'Rail separation L', { min: 1, max: 3, step: 0.1, value: 2, fmt: v => v.toFixed(1) + ' m' }, v => S.L = v);
+ui.slider(gv, 'Field strength B', { min: 0.2, max: 2, step: 0.1, value: 1, fmt: v => v.toFixed(1) + ' T' }, v => S.B = v);
+ui.slider(gv, 'Spin speed ω (generator)', { min: 0.5, max: 6, step: 0.1, value: 2.5, fmt: v => v.toFixed(1) + ' rad/s' }, v => S.omega = v);
+ui.buttons(gv, [
+  { label: '⇅ Flip B', onClick: () => { S.Bdir *= -1; } },
+  { label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }
+]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Field B', true, v => S.showField = v, { swatch: B_COL });
+ui.toggle(gs, 'Induced current', true, v => S.showCurrent = v, { swatch: CUR });
+ui.toggle(gs, 'Opposing force (Lenz)', true, v => S.showForce = v, { swatch: F_COL });
+ui.toggle(gs, 'Swept area / flux', true, v => S.showFlux = v, { swatch: '#c4b5fd' });
+ui.toggle(gs, 'EMF graph', true, v => S.showGraph = v);
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roV = ui.readout(gr, 'Induced EMF', '');
+const roI = ui.readout(gr, 'Induced current', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 14, yaw: 0.5, pitch: 0.6 });
+
+let rodX = -1.5, phi = 0, lastT = 0, simT = 0;
+const samples = [];
+const R_LOAD = 2;
+
+/* ---------- rod on rails ---------- */
+function drawRails(dt) {
+  const hl = S.L; // half separation = L/2, but draw with L as full separation
+  const z0 = -hl / 1, z1 = hl / 1; // rails at ±L/2 → span = L
+  const zA = -S.L / 2, zB = S.L / 2;
+  const X0 = -4.5, X1 = 4.5;
+
+  if (S.running) {
+    rodX += S.v * dt;
+    if (rodX > 4.2) rodX = -3.8;
+    if (rodX < -3.8) rodX = 4.2;
+  }
+
+  const emf = S.B * S.Bdir * S.v * S.L;
+  const I = emf / R_LOAD;
+
+  /* field: grid of vertical arrows */
+  if (S.showField) {
+    for (const x of [-3.5, -1.2, 1.2, 3.5]) {
+      for (const z of [-2.2, 0, 2.2]) {
+        eng.arrow([x, -1.4 * S.Bdir, z], [x, 1.4 * S.Bdir, z], { color: B_COL, width: 2.5 });
+      }
+    }
+    if (S.labels) eng.label([3.5, 1.9 * S.Bdir, 2.2], 'B', { color: B_COL, size: 24, lift: 3 });
+  }
+
+  /* swept-area shading (the flux through the circuit) */
+  if (S.showFlux) {
+    eng.poly([[X0, -0.02, zA], [rodX, -0.02, zA], [rodX, -0.02, zB], [X0, -0.02, zB]], 'rgba(196,181,253,0.35)');
+    if (S.labels) eng.label([(X0 + rodX) / 2, 0, 0], 'Φ = B × A', { color: '#7c3aed', size: 17, lift: 1 });
+  }
+
+  /* rails + left-end connection through the "lamp" */
+  eng.line([[X0, 0, zA], [X1, 0, zA]], { color: RAIL, width: 6 });
+  eng.line([[X0, 0, zB], [X1, 0, zB]], { color: RAIL, width: 6 });
+  eng.line([[X0, 0, zA], [X0, 0, -0.35]], { color: RAIL, width: 6 });
+  eng.line([[X0, 0, zB], [X0, 0, 0.35]], { color: RAIL, width: 6 });
+  // lamp as the load
+  const P = I * I * R_LOAD;
+  const bright = Math.min(1, Math.abs(P) / 6);
+  if (bright > 0.02) {
+    for (const [r, al] of [[1.0, 0.12], [0.7, 0.2]])
+      eng.sphere([X0, 0, 0], r * (0.5 + bright * 0.4), 'rgba(250,204,21,' + (al * bright).toFixed(3) + ')', { highlight: 'rgba(250,204,21,0)' });
+  }
+  eng.sphere([X0, 0, 0], 0.38, bright > 0.02 ? lighten('#facc15', 0.7 - bright * 0.4) : '#eef2f7', { stroke: INK, strokeWidth: 2 });
+
+  /* the rod */
+  eng.line([[rodX, 0.02, zA - 0.25], [rodX, 0.02, zB + 0.25]], { color: COPPER, width: 10 });
+  if (S.labels) eng.label([rodX, 0.75, zB + 0.6], 'rod', { color: '#475569', size: 15, lift: 2 });
+
+  /* velocity arrow */
+  const vdir = S.v >= 0 ? 1 : -1;
+  if (Math.abs(S.v) > 0.05) {
+    eng.arrow([rodX, 0.55, 0], [rodX + vdir * (0.5 + Math.abs(S.v) * 0.35), 0.55, 0], { color: V_COL, width: 5, label: S.labels ? 'v' : '' });
+  }
+
+  /* induced current arrows + Lenz force */
+  if (Math.abs(I) > 0.02) {
+    if (S.showCurrent) {
+      // conventional current in rod: q v×B → along +z when v>0, B up
+      const iz = (S.v * S.B * S.Bdir) >= 0 ? 1 : -1;
+      eng.arrow([rodX, 0.35, -0.5 * iz], [rodX, 0.35, 0.5 * iz], { color: CUR, width: 5, label: S.labels ? 'I' : '' });
+      // arrows along the return path (left end)
+      const mid = (X0 + rodX) / 2;
+      eng.arrow([mid + 0.4 * iz, 0.12, zB], [mid - 0.4 * iz, 0.12, zB], { color: CUR, width: 4 });
+      eng.arrow([mid - 0.4 * iz, 0.12, zA], [mid + 0.4 * iz, 0.12, zA], { color: CUR, width: 4 });
+    }
+    if (S.showForce) {
+      // Lenz: force on rod opposes motion
+      eng.arrow([rodX, 0.02, 0], [rodX - vdir * (0.4 + Math.abs(I) * S.B * S.L * 0.3), 0.02, 0], { color: F_COL, width: 5, label: S.labels ? 'F opposes v' : '' });
+    }
+  }
+
+  roV.set(Math.abs(emf).toFixed(2) + ' V');
+  roI.set(Math.abs(I).toFixed(2) + ' A');
+  foot.set('The rod sweeps through field lines → charges in it feel F = Bqv → an EMF: &nbsp;<b>V = B v L = ' +
+    S.B.toFixed(1) + ' × ' + Math.abs(S.v).toFixed(1) + ' × ' + S.L.toFixed(1) + ' = ' + Math.abs(emf).toFixed(2) + ' V</b>');
+  return emf;
+}
+
+/* ---------- generator ---------- */
+function rot(x, y, th) { return [x * Math.cos(th) - y * Math.sin(th), x * Math.sin(th) + y * Math.cos(th)]; }
+
+function drawGenerator(dt) {
+  if (S.running) phi += S.omega * dt;
+  const a = 1.5, b = 1.3;
+  const raw = S.B * S.omega * Math.sin(phi) * (2 * a * 2 * b) * 0.25;
+  const emf = S.gen === 'dc' ? Math.abs(raw) : raw;
+
+  /* magnets + field */
+  eng.box([-3.4, 0, 0], 0.45, 1.9, 1.9, N_COL, { stroke: INK, strokeWidth: 2 });
+  eng.box([3.4, 0, 0], 0.45, 1.9, 1.9, S_COL, { stroke: INK, strokeWidth: 2 });
+  if (S.labels) {
+    eng.label([-3.4, 2.35, 0], 'N', { color: N_COL, size: 30, lift: 3 });
+    eng.label([3.4, 2.35, 0], 'S', { color: S_COL, size: 30, lift: 3 });
+  }
+  if (S.showField) {
+    for (const y of [-1.2, 0, 1.2]) for (const z of [-1.2, 1.2])
+      eng.arrow([-2.8, y, z], [2.8, y, z], { color: B_COL, width: 3 });
+    if (S.labels) eng.label([0, 1.6, -1.2], 'B', { color: B_COL, size: 22, lift: 3 });
+  }
+
+  /* rotating coil (turned by an external crank — this is a generator!) */
+  const [ax, ay] = rot(a, 0, phi);
+  const A0 = [ax, ay, -b], A1 = [ax, ay, b], B0 = [-ax, -ay, b], B1 = [-ax, -ay, -b];
+  eng.line([A0, A1], { color: COPPER, width: 8 });
+  eng.line([A1, B0], { color: shade(COPPER, 0.85), width: 8 });
+  eng.line([B0, B1], { color: COPPER, width: 8 });
+  eng.line([[0, 0, -b - 1.5], [0, 0, b + 1.1]], { color: '#94a3b8', width: 4 });
+  // crank handle on the far end
+  const [hx, hy] = rot(0.7, 0, phi);
+  eng.line([[0, 0, b + 1.1], [hx, hy, b + 1.1], [hx, hy, b + 1.5]], { color: '#475569', width: 6 });
+  if (S.labels) eng.label([0, -1.1, b + 1.3], 'turned by hand / turbine', { color: '#475569', size: 14, lift: 3 });
+
+  /* slip rings (AC) or split-ring commutator (DC) + brushes */
+  const zc = -b - 0.8, rc = 0.32;
+  if (S.gen === 'ac') {
+    for (const dz of [0, 0.35]) {
+      const ring = [];
+      for (let i = 0; i <= 30; i++) {
+        const ang = (i / 30) * Math.PI * 2;
+        ring.push([rc * Math.cos(ang), rc * Math.sin(ang), zc - dz]);
+      }
+      eng.line(ring, { color: dz ? shade(COPPER, 0.8) : COPPER, width: 5 });
+    }
+    if (S.labels) eng.label([0, 0.85, zc - 0.4], 'slip rings → AC', { color: '#475569', size: 14, lift: 3 });
+  } else {
+    for (const half of [0, 1]) {
+      const arc = [];
+      for (let i = 0; i <= 20; i++) {
+        const ang = phi + half * Math.PI + 0.18 + (i / 20) * (Math.PI - 0.36);
+        arc.push([rc * Math.cos(ang), rc * Math.sin(ang), zc]);
+      }
+      eng.line(arc, { color: half ? shade(COPPER, 0.8) : COPPER, width: 6 });
+    }
+    if (S.labels) eng.label([0, 0.85, zc - 0.4], 'commutator → DC', { color: '#475569', size: 14, lift: 3 });
+  }
+  eng.box([0.6, 0, zc - 0.15], 0.16, 0.13, 0.3, '#475569', { stroke: INK, strokeWidth: 1.5 });
+  eng.box([-0.6, 0, zc - 0.15], 0.16, 0.13, 0.3, '#475569', { stroke: INK, strokeWidth: 1.5 });
+
+  /* induced current arrows on the coil sides */
+  if (S.showCurrent && Math.abs(raw) > 0.08) {
+    const dz = raw >= 0 ? 1 : -1;
+    eng.arrow([ax, ay, -0.45 * dz], [ax, ay, 0.45 * dz], { color: CUR, width: 5, label: S.labels ? 'I' : '' });
+    eng.arrow([-ax, -ay, 0.45 * dz], [-ax, -ay, -0.45 * dz], { color: CUR, width: 5 });
+  }
+
+  roV.set(Math.abs(emf).toFixed(2) + ' V');
+  roI.set((Math.abs(emf) / R_LOAD).toFixed(2) + ' A');
+  foot.set('Spin the coil → it cuts field lines → EMF is induced. Biggest EMF when the coil is <b>flat</b> (sides cutting straight across B), zero when upright. ' +
+    (S.gen === 'dc' ? 'The <b>commutator</b> flips the connection every half turn → one-way (DC) output.' : '<b>Slip rings</b> keep each end connected → alternating (AC) output.'));
+  return emf;
+}
+
+/* ---------- EMF graph overlay (2D) ---------- */
+function drawGraph() {
+  const gw = Math.min(430, W() * 0.42), gh = 170;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+  const mx = gx + 44, mw = gw - 58, my = gy + 14, mh = gh - 28;
+  const midY = my + mh / 2;
+  // axes
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx, midY); ctx.lineTo(mx + mw, midY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.stroke();
+  Draw.label(ctx, 'EMF', gx + 26, my + 8, { size: 14, color: '#475569' });
+  Draw.label(ctx, '0', mx - 12, midY, { size: 13, color: '#475569' });
+  Draw.label(ctx, 'time →', mx + mw - 30, gy + gh - 12, { size: 13, color: '#475569' });
+  // trace
+  const span = 8; // seconds shown
+  const vScale = (mh / 2 - 6) / 4.5;
+  ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 3.5;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  let started = false;
+  for (const s of samples) {
+    const age = simT - s.t;
+    if (age > span) continue;
+    const x = mx + mw - (age / span) * mw;
+    const y = midY - Math.max(-mh / 2 + 4, Math.min(mh / 2 - 4, s.v * vScale));
+    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+  if (S.running) simT += dt;
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+  const emf = S.mode === 'rails' ? drawRails(dt) : drawGenerator(dt);
+  eng.flush(ctx);
+
+  if (S.running) {
+    samples.push({ t: simT, v: emf });
+    if (samples.length > 1200) samples.splice(0, samples.length - 1200);
+  }
+  if (S.showGraph) drawGraph();
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

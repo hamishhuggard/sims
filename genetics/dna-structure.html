@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNA Structure &amp; Replication — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const BACKBONE_COL = '#64748b';
+const NEW_COL = '#0d9488';
+const BASE_COL = { A: '#16a34a', T: '#dc2626', G: '#f59e0b', C: '#2563eb' };
+const COMPLEMENT = { A: 'T', T: 'A', G: 'C', C: 'G' };
+
+const N = 34;             // number of base-pair rungs
+const RADIUS = 1.1;
+const RISE = 0.85;        // spacing along the length axis per rung
+const TURN = (2 * Math.PI) / 8; // ~8 rungs per full turn (simplified for legibility)
+const SEP = 3.2;          // max daughter-helix separation once fully replicated
+
+/* fixed base-pair sequence, assigned once (not recomputed per frame — see gotcha #2) */
+const PAIRS = [];
+for (let i = 0; i < N; i++) {
+  const a = Math.random() < 0.5 ? (Math.random() < 0.5 ? 'A' : 'G') : (Math.random() < 0.5 ? 'T' : 'C');
+  PAIRS.push(a);
+}
+
+function basePos(i, strand) {
+  const angle = i * TURN + (strand === 'B' ? Math.PI : 0);
+  const x = (i - N / 2) * RISE;
+  const y = RADIUS * Math.cos(angle);
+  const z = RADIUS * Math.sin(angle);
+  return [x, y, z];
+}
+
+const S = {
+  mode: 'structure',
+  fork: 0, running: false,
+  showBackbone: true, showBases: true, showHbonds: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'DNA Structure & Replication', subtitle: 'The double helix, base pairing, and how it copies itself — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('Mode');
+ui.segment(gm, null, [
+  { value: 'structure', label: 'Structure' },
+  { value: 'replication', label: 'Replication' }
+], 'structure', v => { S.mode = v; if (v === 'structure') { S.fork = 0; S.running = false; } });
+
+const gr = ui.group('Replication (in Replication mode)');
+ui.buttons(gr, [
+  { label: '⏯ Play / pause', onClick: () => { S.running = !S.running; } },
+  { label: '⟲ Reset fork', onClick: () => { S.fork = 0; S.running = false; } }
+]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Backbone', true, v => S.showBackbone = v, { swatch: BACKBONE_COL });
+ui.toggle(gv, 'Base pairs', true, v => S.showBases = v);
+ui.toggle(gv, 'Hydrogen bonds', true, v => S.showHbonds = v);
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gd = ui.group('Readings');
+const roFork = ui.readout(gd, 'Replicated', '0 / ' + N + ' bp');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 16, yaw: 0.5, pitch: 0.25 });
+
+let lastT = 0;
+
+function progAt(i) { return Math.max(0, Math.min(1, (S.fork - i) / 6)); }
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  if (S.mode === 'replication' && S.running) {
+    S.fork = Math.min(N, S.fork + dt * 5);
+    if (S.fork >= N) S.running = false;
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -14; g <= 14.01; g += 3) {
+    eng.line([[g, -5, -14], [g, -5, 14]], { color: '#eef2f7', width: 1.2 });
+    eng.line([[-14, -5, g], [14, -5, g]], { color: '#eef2f7', width: 1.2 });
+  }
+
+  if (S.mode === 'structure') {
+    const lineA = [], lineB = [];
+    for (let i = 0; i < N; i++) { lineA.push(basePos(i, 'A')); lineB.push(basePos(i, 'B')); }
+    if (S.showBackbone) {
+      eng.line(lineA, { color: BACKBONE_COL, width: 7 });
+      eng.line(lineB, { color: BACKBONE_COL, width: 7 });
+    }
+    for (let i = 0; i < N; i++) {
+      const a = basePos(i, 'A'), b = basePos(i, 'B');
+      const baseA = PAIRS[i], baseB = COMPLEMENT[baseA];
+      const pa = v3.lerp(a, b, 0.32), pb = v3.lerp(a, b, 0.68);
+      if (S.showHbonds) eng.line([pa, pb], { color: '#cbd5e1', width: 2, dash: [3, 3] });
+      if (S.showBases) {
+        eng.sphere(pa, 0.24, BASE_COL[baseA], { stroke: INK, strokeWidth: 1.2, label: S.labels ? baseA : '' });
+        eng.sphere(pb, 0.24, BASE_COL[baseB], { stroke: INK, strokeWidth: 1.2, label: S.labels ? baseB : '' });
+      }
+    }
+    if (S.labels) {
+      eng.label(v3.add(basePos(0, 'A'), [-0.6, 0, 0]), "5'", { color: BACKBONE_COL, size: 20, lift: 2 });
+      eng.label(v3.add(basePos(N - 1, 'A'), [0.6, 0, 0]), "3'", { color: BACKBONE_COL, size: 20, lift: 2 });
+    }
+  } else {
+    const lA = [], lB = [], lBnew = [], lAnew = [];
+    for (let i = 0; i < N; i++) {
+      const prog = progAt(i);
+      const yOff = i < S.fork ? -SEP * prog : 0;
+      const a = basePos(i, 'A'); a[1] += yOff;
+      lA.push(a);
+      const bOff = i < S.fork ? SEP * prog : 0;
+      const b = basePos(i, 'B'); b[1] += bOff;
+      lB.push(b);
+      if (i < S.fork) {
+        const bn = basePos(i, 'B'); bn[1] += yOff; lBnew.push(bn);
+        const an = basePos(i, 'A'); an[1] += bOff; lAnew.push(an);
+      }
+    }
+    if (S.showBackbone) {
+      eng.line(lA, { color: BACKBONE_COL, width: 7 });
+      eng.line(lB, { color: BACKBONE_COL, width: 7 });
+      if (lBnew.length > 1) eng.line(lBnew, { color: NEW_COL, width: 7 });
+      if (lAnew.length > 1) eng.line(lAnew, { color: NEW_COL, width: 7 });
+    }
+    for (let i = 0; i < N; i++) {
+      const prog = progAt(i);
+      const baseA = PAIRS[i], baseB = COMPLEMENT[baseA];
+      if (i < S.fork) {
+        const yOff = -SEP * prog, bOff = SEP * prog;
+        const a1 = basePos(i, 'A'); a1[1] += yOff;
+        const b1 = basePos(i, 'B'); b1[1] += yOff;
+        const pa1 = v3.lerp(a1, b1, 0.32), pb1 = v3.lerp(a1, b1, 0.68);
+        const b2 = basePos(i, 'B'); b2[1] += bOff;
+        const a2 = basePos(i, 'A'); a2[1] += bOff;
+        const pa2 = v3.lerp(a2, b2, 0.68), pb2 = v3.lerp(a2, b2, 0.32);
+        if (S.showHbonds) { eng.line([pa1, pb1], { color: '#cbd5e1', width: 2, dash: [3, 3] }); eng.line([pa2, pb2], { color: '#cbd5e1', width: 2, dash: [3, 3] }); }
+        if (S.showBases) {
+          eng.sphere(pa1, 0.22, BASE_COL[baseA], { stroke: INK, strokeWidth: 1.2, label: S.labels ? baseA : '' });
+          eng.sphere(pb1, 0.22, BASE_COL[baseB], { stroke: INK, strokeWidth: 1.2, label: S.labels ? baseB : '' });
+          eng.sphere(pb2, 0.22, BASE_COL[baseB], { stroke: INK, strokeWidth: 1.2, label: S.labels ? baseB : '' });
+          eng.sphere(pa2, 0.22, BASE_COL[baseA], { stroke: INK, strokeWidth: 1.2, label: S.labels ? baseA : '' });
+        }
+      } else {
+        const a = basePos(i, 'A'), b = basePos(i, 'B');
+        const pa = v3.lerp(a, b, 0.32), pb = v3.lerp(a, b, 0.68);
+        if (S.showHbonds) eng.line([pa, pb], { color: '#cbd5e1', width: 2, dash: [3, 3] });
+        if (S.showBases) {
+          eng.sphere(pa, 0.24, BASE_COL[baseA], { stroke: INK, strokeWidth: 1.2, label: S.labels ? baseA : '' });
+          eng.sphere(pb, 0.24, BASE_COL[baseB], { stroke: INK, strokeWidth: 1.2, label: S.labels ? baseB : '' });
+        }
+      }
+    }
+    if (S.labels && S.fork > 2) {
+      eng.label(v3.add(basePos(0, 'A'), [-0.8, -SEP, 0]), 'daughter 1', { color: NEW_COL, size: 16, lift: 2 });
+      eng.label(v3.add(basePos(0, 'B'), [-0.8, SEP, 0]), 'daughter 2', { color: NEW_COL, size: 16, lift: 2 });
+    }
+  }
+
+  eng.flush(ctx);
+
+  if (S.mode === 'structure') {
+    roFork.set(N + ' / ' + N + ' bp');
+    foot.set('<b>Base pairing:</b> A&ndash;T (2 H-bonds), G&ndash;C (3 H-bonds) &mdash; sugar-phosphate backbone outside, bases inside, strands antiparallel.');
+  } else {
+    roFork.set(Math.floor(Math.min(S.fork, N)) + ' / ' + N + ' bp');
+    foot.set('<b>Semi-conservative replication:</b> the helix unwinds and each old strand acts as a template &mdash; every daughter molecule ends up with <b>one original strand + one new strand</b>.');
+  }
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

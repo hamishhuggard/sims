@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Newton's Three Laws — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', FORCE_COL = '#dc2626', VEL_COL = '#16a34a';
+const BLOCK_A = '#2563eb', BLOCK_B = '#f59e0b';
+
+const S = {
+  law: '1',
+  // law 1
+  push1: false, friction1: false,
+  // law 2
+  force2: 5, massA2: 1, massB2: 3,
+  // law 3
+  massA3: 1, massB3: 2,
+  labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: "Newton's Three Laws", subtitle: 'Inertia, F = ma, and action-reaction — drag to orbit, scroll to zoom' });
+
+const gl = ui.group('Which law?');
+ui.segment(gl, null, [
+  { value: '1', label: '1st: Inertia' },
+  { value: '2', label: '2nd: F = ma' },
+  { value: '3', label: '3rd: Action-Reaction' }
+], '1', v => { S.law = v; showGroups(); resetAll(); });
+
+const g1 = ui.group('1st Law — push the block');
+ui.toggle(g1, 'Apply push', false, v => S.push1 = v, { swatch: FORCE_COL });
+ui.toggle(g1, 'Friction (rough floor)', false, v => S.friction1 = v);
+ui.buttons(g1, [{ label: '⟲ Reset', onClick: () => resetLaw1() }]);
+
+const g2 = ui.group('2nd Law — same push, different mass');
+ui.slider(g2, 'Applied force F', { min: 1, max: 10, step: 0.5, value: 5, fmt: v => v.toFixed(1) + ' N' }, v => S.force2 = v);
+ui.slider(g2, 'Mass of blue block', { min: 0.5, max: 5, step: 0.5, value: 1, fmt: v => v.toFixed(1) + ' kg' }, v => S.massA2 = v);
+ui.slider(g2, 'Mass of orange block', { min: 0.5, max: 5, step: 0.5, value: 3, fmt: v => v.toFixed(1) + ' kg' }, v => S.massB2 = v);
+ui.buttons(g2, [{ label: '⟲ Reset', onClick: () => resetLaw2() }]);
+
+const g3 = ui.group('3rd Law — push apart on frictionless ice');
+ui.slider(g3, 'Mass of blue skater', { min: 0.5, max: 5, step: 0.5, value: 1, fmt: v => v.toFixed(1) + ' kg' }, v => S.massA3 = v);
+ui.slider(g3, 'Mass of orange skater', { min: 0.5, max: 5, step: 0.5, value: 2, fmt: v => v.toFixed(1) + ' kg' }, v => S.massB3 = v);
+ui.buttons(g3, [
+  { label: '👋 Push apart!', onClick: () => pushApart3(), primary: true },
+  { label: '⟲ Reset', onClick: () => resetLaw3() }
+]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roMain = ui.readout(gr, 'Reading', '');
+const roMain2 = ui.readout(gr, ' ', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 16, yaw: 0.5, pitch: 0.3 });
+
+function showGroups() {
+  g1.style.display = S.law === '1' ? '' : 'none';
+  g2.style.display = S.law === '2' ? '' : 'none';
+  g3.style.display = S.law === '3' ? '' : 'none';
+}
+showGroups();
+
+/* ---- Law 1: inertia ---- */
+let l1 = { x: -5, v: 0 };
+function resetLaw1() { l1 = { x: -5, v: 0 }; }
+function stepLaw1(dt) {
+  const A_PUSH = 2.2, A_FRIC = 1.4;
+  let a = 0;
+  if (S.push1) a += A_PUSH;
+  if (S.friction1 && !S.push1 && Math.abs(l1.v) > 1e-3) a -= Math.sign(l1.v) * A_FRIC;
+  l1.v += a * dt;
+  if (S.friction1 && !S.push1 && Math.abs(l1.v) < A_FRIC * dt) l1.v = 0;
+  l1.x += l1.v * dt;
+  if (l1.x > 6) { l1.x = 6; l1.v = 0; }
+}
+
+/* ---- Law 2: F = ma, two blocks side by side ---- */
+let l2 = { xA: -6, vA: 0, xB: -6, vB: 0 };
+function resetLaw2() { l2 = { xA: -6, vA: 0, xB: -6, vB: 0 }; }
+function stepLaw2(dt) {
+  const aA = S.force2 / S.massA2, aB = S.force2 / S.massB2;
+  l2.vA += aA * dt; l2.vB += aB * dt;
+  l2.xA += l2.vA * dt; l2.xB += l2.vB * dt;
+  if (l2.xA > 6.5) { l2.xA = -6; l2.vA = 0; }
+  if (l2.xB > 6.5) { l2.xB = -6; l2.vB = 0; }
+}
+
+/* ---- Law 3: action-reaction ---- */
+let l3 = { xA: -0.55, xB: 0.55, vA: 0, vB: 0, pushed: false };
+function resetLaw3() { l3 = { xA: -0.55, xB: 0.55, vA: 0, vB: 0, pushed: false }; }
+function pushApart3() {
+  if (l3.pushed) return;
+  l3.pushed = true;
+  // equal & opposite impulse J; conserves total momentum (starts at 0)
+  const J = 4;
+  l3.vA = -J / S.massA3;
+  l3.vB = J / S.massB3;
+}
+function stepLaw3(dt) {
+  l3.xA += l3.vA * dt; l3.xB += l3.vB * dt;
+}
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  if (S.law === '1') stepLaw1(dt);
+  else if (S.law === '2') stepLaw2(dt);
+  else stepLaw3(dt);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -7; g <= 7.01; g += 1.5) {
+    eng.line([[g, -1.2, -4], [g, -1.2, 4]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-7, -1.2, g], [7, -1.2, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  if (S.law === '1') {
+    eng.box([l1.x, -0.6, 0], 0.6, 0.6, 0.6, BLOCK_A, { stroke: INK, strokeWidth: 2 });
+    if (S.showV !== false && S.labels) eng.label([l1.x, 0.4, 0], 'v = ' + l1.v.toFixed(2) + ' m/s', { color: VEL_COL, size: 15, lift: 2 });
+    if (Math.abs(l1.v) > 0.02) eng.arrow([l1.x, -0.6, 0], [l1.x + Math.sign(l1.v) * Math.min(Math.abs(l1.v), 3) * 0.5, -0.6, 0], { color: VEL_COL, width: 4 });
+    if (S.push1) eng.arrow([l1.x - 1.1, -0.6, 0], [l1.x - 0.65, -0.6, 0], { color: FORCE_COL, width: 5, label: S.labels ? 'push' : '' });
+    roMain.set(S.push1 ? 'Pushing — speeding up' : (S.friction1 ? (Math.abs(l1.v) < 0.02 ? 'Stopped (friction is an unbalanced force)' : 'Coasting — friction slowing it down') : (Math.abs(l1.v) < 0.02 ? 'At rest — no net force' : 'Moving at constant velocity (no net force)')));
+    roMain2.set('v = ' + l1.v.toFixed(2) + ' m/s');
+    foot.set("<b>Newton's 1st Law:</b> an object stays at rest, or keeps moving at constant velocity, unless acted on by a net force. Toggle friction to see the 'hidden' force that usually stops things on Earth.");
+  } else if (S.law === '2') {
+    eng.box([l2.xA, -0.6, -1.3], 0.6, 0.6, 0.6, BLOCK_A, { stroke: INK, strokeWidth: 2 });
+    eng.box([l2.xB, -0.6, 1.3], 0.8, 0.8, 0.8, BLOCK_B, { stroke: INK, strokeWidth: 2 });
+    eng.arrow([l2.xA - 1.1, -0.6, -1.3], [l2.xA - 0.65, -0.6, -1.3], { color: FORCE_COL, width: 5, label: S.labels ? 'F' : '' });
+    eng.arrow([l2.xB - 1.1, -0.6, 1.3], [l2.xB - 0.65, -0.6, 1.3], { color: FORCE_COL, width: 5, label: S.labels ? 'F' : '' });
+    if (S.labels) {
+      eng.label([l2.xA, 0.4, -1.3], S.massA2.toFixed(1) + ' kg', { color: BLOCK_A, size: 14, lift: 2 });
+      eng.label([l2.xB, 0.6, 1.3], S.massB2.toFixed(1) + ' kg', { color: BLOCK_B, size: 14, lift: 2 });
+    }
+    const aA = S.force2 / S.massA2, aB = S.force2 / S.massB2;
+    roMain.set('a (blue) = F/m = ' + aA.toFixed(2) + ' m/s²');
+    roMain2.set('a (orange) = F/m = ' + aB.toFixed(2) + ' m/s²');
+    foot.set("<b>Newton's 2nd Law:</b> a = F / m — the <i>same</i> force gives the lighter block more acceleration. Same force, less mass, more acceleration.");
+  } else {
+    eng.box([l3.xA, -0.6, 0], 0.55, 0.9, 0.55, BLOCK_A, { stroke: INK, strokeWidth: 2 });
+    eng.box([l3.xB, -0.6, 0], 0.7, 0.9, 0.7, BLOCK_B, { stroke: INK, strokeWidth: 2 });
+    if (!l3.pushed && S.labels) {
+      eng.label([0, 0.6, 0], 'press "Push apart!"', { color: '#64748b', size: 14, lift: 2 });
+    }
+    if (l3.pushed) {
+      const arrowLen = 0.9;
+      eng.arrow([l3.xA + 0.3, -0.6, 0], [l3.xA + 0.3 - arrowLen, -0.6, 0], { color: FORCE_COL, width: 5, label: S.labels ? 'F' : '' });
+      eng.arrow([l3.xB - 0.35, -0.6, 0], [l3.xB - 0.35 + arrowLen, -0.6, 0], { color: FORCE_COL, width: 5, label: S.labels ? 'F' : '' });
+    }
+    const pA = S.massA3 * l3.vA, pB = S.massB3 * l3.vB;
+    roMain.set('p (blue) = ' + pA.toFixed(2) + ' kg·m/s');
+    roMain2.set('p (orange) = ' + pB.toFixed(2) + ' kg·m/s &nbsp; (sum ≈ ' + (pA + pB).toFixed(2) + ')');
+    foot.set("<b>Newton's 3rd Law:</b> equal & opposite forces act on <i>both</i> skaters at once — the lighter one flies off faster so that total momentum stays zero.");
+  }
+
+  eng.flush(ctx);
+  requestAnimationFrame(frame);
+}
+let lastT = 0;
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

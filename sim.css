@@ -1,0 +1,253 @@
+/* Shared styles for classroom simulations — light mode, chunky, projector-friendly */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --ink: #1a1a2e;
+  --paper: #ffffff;
+  --paper2: #f4f6fa;
+  --accent: #2563eb;
+  --pos: #e63946;      /* positive charge / acid */
+  --neg: #2563eb;      /* negative charge / base */
+  --efield: #ea580c;   /* electric field */
+  --bfield: #7c3aed;   /* magnetic field */
+  --force: #dc2626;    /* force vectors */
+  --vel: #16a34a;      /* velocity vectors */
+  --cur: #d97706;      /* conventional current */
+}
+
+html, body { width: 100vw; height: 100vh; overflow: hidden; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 17px;
+}
+
+canvas#sim {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  touch-action: none;
+}
+
+/* ---- header ---- */
+.sim-header {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  z-index: 10;
+  pointer-events: none;
+}
+.sim-header h1 {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+}
+.sim-header .subtitle { font-size: 17px; opacity: 0.75; margin-top: 2px; }
+.sim-header a.back {
+  pointer-events: auto;
+  display: inline-block;
+  margin-bottom: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent);
+  text-decoration: none;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  padding: 3px 14px;
+}
+.sim-header a.back:hover { background: var(--paper2); }
+
+/* ---- control panel ---- */
+.sim-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 10;
+  width: 300px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 6px 6px 0 rgba(26,26,46,0.15);
+}
+.sim-panel .panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  font-weight: 800;
+  font-size: 18px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 3px solid var(--ink);
+}
+.sim-panel.collapsed .panel-head { border-bottom: none; }
+.sim-panel.collapsed .panel-body { display: none; }
+.sim-panel .panel-body { padding: 6px 16px 14px; }
+
+.ctl-group { margin-top: 12px; }
+.ctl-group > .group-title {
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  opacity: 0.6;
+  margin-bottom: 6px;
+}
+
+/* toggles */
+label.ctl-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 16px;
+}
+label.ctl-toggle input { display: none; }
+label.ctl-toggle .box {
+  width: 24px; height: 24px;
+  flex: 0 0 24px;
+  border: 3px solid var(--ink);
+  border-radius: 7px;
+  background: var(--paper);
+  position: relative;
+}
+label.ctl-toggle input:checked + .box { background: var(--accent); border-color: var(--accent); }
+label.ctl-toggle input:checked + .box::after {
+  content: "";
+  position: absolute;
+  left: 5px; top: 1px;
+  width: 6px; height: 11px;
+  border: solid #fff;
+  border-width: 0 3.5px 3.5px 0;
+  transform: rotate(45deg);
+}
+label.ctl-toggle .swatch {
+  width: 22px; height: 8px;
+  border-radius: 4px;
+  flex: 0 0 22px;
+}
+
+/* sliders */
+.ctl-slider { padding: 6px 0; }
+.ctl-slider .row {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: 15.5px;
+  margin-bottom: 2px;
+}
+.ctl-slider .val { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 800; }
+.ctl-slider input[type=range] {
+  width: 100%;
+  accent-color: var(--accent);
+  height: 26px;
+}
+
+/* selects */
+.ctl-select { padding: 6px 0; }
+.ctl-select .lbl { font-weight: 600; font-size: 15.5px; margin-bottom: 4px; }
+.ctl-select select {
+  width: 100%;
+  font: inherit;
+  font-weight: 700;
+  font-size: 16px;
+  padding: 7px 10px;
+  border: 3px solid var(--ink);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* buttons */
+.ctl-buttons { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+.ctl-buttons button {
+  font: inherit;
+  font-weight: 800;
+  font-size: 15.5px;
+  padding: 7px 16px;
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+.ctl-buttons button:hover { background: var(--paper2); }
+.ctl-buttons button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ctl-buttons button.primary:hover { filter: brightness(1.1); }
+
+/* segmented control (radio pills) */
+.ctl-seg { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
+.ctl-seg .lbl { flex-basis: 100%; font-weight: 600; font-size: 15.5px; }
+.ctl-seg button {
+  font: inherit;
+  font-weight: 700;
+  font-size: 14.5px;
+  padding: 5px 12px;
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+.ctl-seg button.on { background: var(--ink); color: #fff; }
+
+/* readouts */
+.ctl-readout {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 4px 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.ctl-readout .val {
+  font-weight: 800;
+  font-size: 19px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
+/* info strip along the bottom (equations, hints) */
+.sim-footer {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 10;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 5px 5px 0 rgba(26,26,46,0.15);
+  padding: 10px 22px;
+  font-size: 20px;
+  font-weight: 700;
+  text-align: center;
+  max-width: min(92vw, 1000px);
+}
+.sim-footer .small { font-size: 15px; font-weight: 600; opacity: 0.7; }
+.sim-footer sub, .sim-footer sup { font-size: 0.65em; }
+
+.hint {
+  position: absolute;
+  bottom: 14px;
+  left: 20px;
+  z-index: 9;
+  font-size: 14px;
+  font-weight: 600;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+@media (max-width: 760px) {
+  .sim-panel { width: 250px; }
+  .sim-header h1 { font-size: 22px; }
+}

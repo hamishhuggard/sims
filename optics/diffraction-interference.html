@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diffraction &amp; Interference of Light — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const BARRIER_COL = '#334155', SCREEN_FRAME_COL = '#475569';
+
+function wavelengthToRGB(nm) {
+  let r = 0, g = 0, b = 0;
+  if (nm < 440) { r = -(nm - 440) / (440 - 380); b = 1; }
+  else if (nm < 490) { g = (nm - 440) / (490 - 440); b = 1; }
+  else if (nm < 510) { g = 1; b = -(nm - 510) / (510 - 490); }
+  else if (nm < 580) { r = (nm - 510) / (580 - 510); g = 1; }
+  else if (nm < 645) { r = 1; g = -(nm - 645) / (645 - 580); }
+  else { r = 1; }
+  return [Math.max(0, Math.min(1, r)), Math.max(0, Math.min(1, g)), Math.max(0, Math.min(1, b))];
+}
+
+const S = {
+  mode: 'double',
+  wavelength: 550, // nm
+  slitSep: 1.0,    // visual units (double-slit)
+  slitWidth: 0.4,  // visual units (single-slit)
+  screenDist: 8,
+  showWavefronts: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Diffraction & Interference of Light', subtitle: "Single-slit diffraction & Young's double-slit — drag to orbit, scroll to zoom" });
+
+const gm = ui.group('Setup');
+ui.segment(gm, null, [
+  { value: 'single', label: 'Single slit' },
+  { value: 'double', label: 'Double slit' }
+], 'double', v => S.mode = v);
+ui.slider(gm, 'Wavelength λ', { min: 400, max: 700, step: 5, value: 550, fmt: v => v.toFixed(0) + ' nm' }, v => S.wavelength = v);
+ui.slider(gm, 'Slit separation d', { min: 0.3, max: 2.0, step: 0.05, value: 1.0, fmt: v => v.toFixed(2) + ' units' }, v => S.slitSep = v);
+ui.slider(gm, 'Slit width a', { min: 0.1, max: 0.8, step: 0.02, value: 0.4, fmt: v => v.toFixed(2) + ' units' }, v => S.slitWidth = v);
+ui.slider(gm, 'Screen distance', { min: 4, max: 14, step: 0.5, value: 8, fmt: v => v.toFixed(1) + ' units' }, v => S.screenDist = v);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Wavefronts', true, v => S.showWavefronts = v, { swatch: '#94a3b8' });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roFringe = ui.readout(gr, 'Fringe / minimum spacing', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 22, yaw: 0.0, pitch: 0.15 });
+
+const SLIT_X = -2, SOURCE_X = -9, HALF_SCREEN = 4.2;
+const NM_TO_UNIT = 1 / 3000; // arbitrary illustrative scale, not to physical size
+
+function intensityAt(y) {
+  const L = S.screenDist;
+  const sinT = y / Math.sqrt(y * y + L * L);
+  const lam = S.wavelength * NM_TO_UNIT;
+  if (S.mode === 'double') {
+    const phase = Math.PI * S.slitSep * sinT / lam;
+    return Math.pow(Math.cos(phase), 2);
+  } else {
+    const beta = Math.PI * S.slitWidth * sinT / lam;
+    if (Math.abs(beta) < 1e-6) return 1;
+    return Math.pow(Math.sin(beta) / beta, 2);
+  }
+}
+
+function frame(tms) {
+  const t = tms / 1000;
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  const [cr, cg, cb] = wavelengthToRGB(S.wavelength);
+  const baseCol = `rgb(${Math.round(cr * 255)},${Math.round(cg * 255)},${Math.round(cb * 255)})`;
+
+  // source
+  eng.sphere([SOURCE_X, 0, 0], 0.18, '#facc15', { stroke: INK, strokeWidth: 1.5 });
+  if (S.labels) eng.label([SOURCE_X, 0.6, 0], 'source', { color: '#78350f', size: 13, lift: 2 });
+
+  // barrier with slit(s)
+  const barrierHalfH = HALF_SCREEN + 0.6;
+  const slitYs = S.mode === 'double' ? [S.slitSep / 2, -S.slitSep / 2] : [0];
+  const gapHalf = S.mode === 'double' ? 0.05 : S.slitWidth / 2;
+  const edges = [-barrierHalfH, ...slitYs.slice().sort((a, b) => a - b).flatMap(y => [y - gapHalf, y + gapHalf]), barrierHalfH];
+  for (let i = 0; i < edges.length; i += 2) {
+    const y0 = edges[i], y1 = edges[i + 1];
+    if (y1 - y0 < 0.01) continue;
+    const mid = (y0 + y1) / 2, halfH = (y1 - y0) / 2;
+    eng.box([SLIT_X, mid, 0], 0.08, halfH, 0.5, BARRIER_COL, { stroke: INK, strokeWidth: 1.5 });
+  }
+  if (S.labels) eng.label([SLIT_X, barrierHalfH + 0.5, 0], S.mode === 'double' ? 'double slit' : 'single slit', { color: '#475569', size: 13, lift: 2 });
+
+  // wavefronts: expanding semicircular arcs from each slit
+  if (S.showWavefronts) {
+    for (const ySlit of slitYs) {
+      for (let k = 0; k < 3; k++) {
+        const phase = (t * 2.2 + k / 3) % 1;
+        const rad = phase * (S.screenDist + 2);
+        const alpha = 0.35 * (1 - phase);
+        if (alpha < 0.02) continue;
+        const pts = [];
+        for (let a = -70; a <= 70; a += 8) {
+          const ang = a * Math.PI / 180;
+          pts.push([SLIT_X + rad * Math.cos(ang), ySlit + rad * Math.sin(ang), 0]);
+        }
+        eng.line(pts, { color: `rgba(${Math.round(cr * 255)},${Math.round(cg * 255)},${Math.round(cb * 255)},${alpha.toFixed(2)})`, width: 2 });
+      }
+    }
+  }
+
+  // screen: intensity pattern drawn as stacked short ticks
+  const L = S.screenDist;
+  eng.line([[L, -barrierHalfH, 0], [L, barrierHalfH, 0]], { color: SCREEN_FRAME_COL, width: 2 });
+  const N = 70;
+  for (let i = 0; i < N; i++) {
+    const y0 = -HALF_SCREEN + (2 * HALF_SCREEN * i) / N;
+    const y1 = -HALF_SCREEN + (2 * HALF_SCREEN * (i + 1)) / N;
+    const yMid = (y0 + y1) / 2;
+    const I = intensityAt(yMid);
+    const col = `rgb(${Math.round(cr * 255 * I)},${Math.round(cg * 255 * I)},${Math.round(cb * 255 * I)})`;
+    eng.line([[L, y0, 0], [L, y1, 0]], { color: col, width: 10 });
+  }
+  if (S.labels) eng.label([L, barrierHalfH + 0.5, 0], 'screen', { color: '#475569', size: 13, lift: 2 });
+
+  eng.flush(ctx);
+
+  const lam = S.wavelength * NM_TO_UNIT;
+  if (S.mode === 'double') {
+    const spacing = lam * L / S.slitSep; // small-angle fringe spacing, illustrative
+    roFringe.set(spacing.toFixed(2) + ' units between bright fringes');
+  } else {
+    const spacing = lam * L / S.slitWidth;
+    roFringe.set(spacing.toFixed(2) + ' units between dark minima');
+  }
+
+  foot.set(S.mode === 'double'
+    ? '<b>d sinθ = mλ</b> for bright fringes &mdash; two coherent slits act as two point sources; where their path difference is a whole number of wavelengths, waves arrive in phase (bright); a half-wavelength out, they cancel (dark).'
+    : '<b>a sinθ = mλ</b> for dark minima &mdash; every point across a single slit acts as a wavelet source; off-axis, wavelets from across the slit cancel in pairs, carving dark bands into an otherwise spreading beam.');
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

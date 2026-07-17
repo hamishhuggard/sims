@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Standing Waves &amp; Resonance — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', WAVE_COL = '#2563eb', NODE_COL = '#94a3b8', ANTINODE_COL = '#e63946';
+
+const L = 8, V = 4, F1 = V / (2 * L);
+
+const S = {
+  freq: F1,
+  ampMax: 1.2,
+  showString: true, showNodes: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Standing Waves & Resonance', subtitle: 'A string fixed at both ends — drag to orbit, scroll to zoom' });
+
+const gc = ui.group('Driving frequency');
+const freqSlider = ui.slider(gc, 'Frequency f', { min: F1 * 0.4, max: F1 * 6.2, step: F1 * 0.05, value: F1, fmt: v => v.toFixed(2) + ' Hz' }, v => S.freq = v);
+ui.buttons(gc, [1, 2, 3, 4, 5].map(n => ({
+  label: (n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : n + 'th') + ' harmonic',
+  onClick: () => { S.freq = n * F1; freqSlider.set(S.freq); }
+})));
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'String', true, v => S.showString = v, { swatch: WAVE_COL });
+ui.toggle(gs, 'Nodes / antinodes', true, v => S.showNodes = v);
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roN = ui.readout(gr, 'Nearest harmonic n', '');
+const roFn = ui.readout(gr, 'Resonant f_n = n·v / 2L', '');
+const roLambda = ui.readout(gr, 'Wavelength λ_n = 2L / n', '');
+const roAmp = ui.readout(gr, 'Standing-wave amplitude', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 17, yaw: 0.15, pitch: 0.22, target: [L / 2, 0, 0] });
+
+let simT = 0, lastT = 0;
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+  simT += dt;
+
+  const n = Math.max(1, Math.round(S.freq / F1));
+  const fn = n * F1;
+  const detune = (S.freq - fn) / F1;
+  const resWidth = 0.18;
+  const gain = 1 / (1 + (detune / resWidth) * (detune / resWidth));
+  const amp = S.ampMax * gain;
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = 0; g <= L + 0.01; g += 1) {
+    eng.line([[g, -2.4, -2], [g, -2.4, 2]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  eng.box([0, -0.6, 0], 0.15, 1.6, 0.15, '#475569', { stroke: INK, strokeWidth: 2 });
+  eng.box([L, -0.6, 0], 0.15, 1.6, 0.15, '#475569', { stroke: INK, strokeWidth: 2 });
+
+  if (S.showString) {
+    const pts = [];
+    const N = 120;
+    for (let i = 0; i < N; i++) {
+      const x = L * i / (N - 1);
+      const y = amp * Math.sin(n * Math.PI * x / L) * Math.cos(2 * Math.PI * S.freq * simT);
+      pts.push([x, y, 0]);
+    }
+    eng.line(pts, { color: WAVE_COL, width: 4 });
+  }
+
+  if (S.showNodes) {
+    for (let k = 0; k <= n; k++) {
+      const x = k * L / n;
+      eng.sphere([x, 0, 0], 0.13, NODE_COL, { stroke: INK, strokeWidth: 1 });
+    }
+    for (let k = 0; k < n; k++) {
+      const x = (k + 0.5) * L / n;
+      eng.sphere([x, 0, 0.9], 0.11, ANTINODE_COL, { stroke: INK, strokeWidth: 1 });
+    }
+    if (S.labels) {
+      eng.label([L / 2, -1.9, 0], 'grey = nodes (always still) · red = antinode positions (max swing)', { color: '#475569', size: 13, lift: 2 });
+    }
+  }
+
+  eng.flush(ctx);
+
+  roN.set(String(n));
+  roFn.set(fn.toFixed(2) + ' Hz');
+  roLambda.set((2 * L / n).toFixed(2) + ' m');
+  roAmp.set(amp.toFixed(2) + ' m' + (gain > 0.9 ? ' — resonance!' : ''));
+
+  foot.set('Standing waves only build up at <b>f = n·v / 2L</b> (both ends fixed = nodes) — sweep the frequency and the amplitude only swells near these resonant frequencies; everywhere else the string barely moves.');
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

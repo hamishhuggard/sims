@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Classroom Simulations</title>
+<link rel="stylesheet" href="sim.css">
+<style>
+html, body { height: auto; overflow: auto; }
+body { padding: 40px 24px 80px; }
+.hub-title {
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  text-align: center;
+  margin-bottom: 8px;
+}
+.hub-subtitle {
+  text-align: center;
+  font-size: 18px;
+  opacity: 0.7;
+  margin-bottom: 48px;
+}
+.subject-title {
+  max-width: 1100px;
+  margin: 0 auto 20px;
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--accent);
+}
+.subject-title:not(:first-of-type) { margin-top: 12px; }
+.hub-section { max-width: 1100px; margin: 0 auto 56px; }
+.hub-section h2 {
+  font-size: 24px;
+  font-weight: 800;
+  border-bottom: 4px solid var(--ink);
+  padding-bottom: 8px;
+  margin-bottom: 24px;
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+.card {
+  display: block;
+  text-decoration: none;
+  color: var(--ink);
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 6px 6px 0 rgba(26,26,46,0.15);
+  overflow: hidden;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.card:hover {
+  transform: translate(-3px, -3px);
+  box-shadow: 9px 9px 0 rgba(26,26,46,0.18);
+}
+.card .thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  object-position: center 65%;
+  border-bottom: 3px solid var(--ink);
+  background: var(--paper2);
+}
+.card .card-body { padding: 16px 18px 20px; }
+.card .title { font-size: 19px; font-weight: 800; margin-bottom: 6px; }
+.card .hook { font-size: 14.5px; opacity: 0.7; line-height: 1.35; }
+@media (max-width: 600px) {
+  .hub-title { font-size: 30px; }
+}
+</style>
+</head>
+<body>
+<div class="hub-title">Classroom Simulations</div>
+<div class="hub-subtitle">3D, light-mode, projector-friendly — drag to orbit, scroll to zoom</div>
+
+<h1 class="subject-title">Physics</h1>
+
+<div class="hub-section">
+  <h2>Electricity &amp; Magnetism</h2>
+  <div class="card-grid">
+    <a class="card" href="electromagnetism/electric-field.html">
+      <img class="thumb" src="previews/electric-field.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Electric Fields</div>
+        <div class="hook">Field lines around charges, and the gravity analogy.</div>
+      </div>
+    </a>
+    <a class="card" href="electromagnetism/circuit-3d.html">
+      <img class="thumb" src="previews/circuit-3d.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">DC Circuits</div>
+        <div class="hook">Watch electrons actually flow through series &amp; parallel.</div>
+      </div>
+    </a>
+    <a class="card" href="electromagnetism/magnetic-field.html">
+      <img class="thumb" src="previews/magnetic-field.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Magnetic Fields</div>
+        <div class="hook">Bar magnets, wires and solenoids — where do the field lines go?</div>
+      </div>
+    </a>
+    <a class="card" href="electromagnetism/motor.html">
+      <img class="thumb" src="previews/motor.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">DC Motor</div>
+        <div class="hook">F = BIL and the right-hand slap rule, in 3D.</div>
+      </div>
+    </a>
+    <a class="card" href="electromagnetism/charge-in-field.html">
+      <img class="thumb" src="previews/charge-in-field.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Charge in a Magnetic Field</div>
+        <div class="hook">Why moving charges curve into circles.</div>
+      </div>
+    </a>
+    <a class="card" href="electromagnetism/induction.html">
+      <img class="thumb" src="previews/induction.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Induction &amp; Generators</div>
+        <div class="hook">Rod on rails, AC vs DC generators, and Lenz's law.</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<div class="hub-section">
+  <h2>Nuclear Physics</h2>
+  <div class="card-grid">
+    <a class="card" href="nuclear-physics/radioactive-decay.html">
+      <img class="thumb" src="previews/radioactive-decay.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Radioactive Decay</div>
+        <div class="hook">Stochastic decay per nucleus vs the theoretical half-life curve.</div>
+      </div>
+    </a>
+    <a class="card" href="nuclear-physics/isotopes.html">
+      <img class="thumb" src="previews/isotopes.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Isotopes &amp; the Band of Stability</div>
+        <div class="hook">Protons vs neutrons, and why some nuclides are stable and others aren't.</div>
+      </div>
+    </a>
+    <a class="card" href="nuclear-physics/fission-fusion.html">
+      <img class="thumb" src="previews/fission-fusion.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Fission &amp; Fusion</div>
+        <div class="hook">Split a U-235 chain reaction, or push D+T together to fuse.</div>
+      </div>
+    </a>
+    <a class="card" href="nuclear-physics/radiation-safety.html">
+      <img class="thumb" src="previews/radiation-safety.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Ionising Radiation &amp; Safety</div>
+        <div class="hook">α, β, γ penetrating power through paper, aluminium and lead.</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<div class="hub-section">
+  <h2>Forces &amp; Motion</h2>
+  <div class="card-grid">
+    <a class="card" href="forces-and-motion/newtons-laws.html">
+      <img class="thumb" src="previews/newtons-laws.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Newton's Three Laws</div>
+        <div class="hook">Inertia, F = ma, and action-reaction — side by side.</div>
+      </div>
+    </a>
+    <a class="card" href="forces-and-motion/projectile-motion.html">
+      <img class="thumb" src="previews/projectile-motion.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Projectile Motion</div>
+        <div class="hook">Horizontal &amp; vertical motion are independent — why the path is a parabola.</div>
+      </div>
+    </a>
+    <a class="card" href="forces-and-motion/momentum-collisions.html">
+      <img class="thumb" src="previews/momentum-collisions.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Momentum &amp; Collisions</div>
+        <div class="hook">Elastic vs inelastic carts — momentum always conserved, energy not always.</div>
+      </div>
+    </a>
+    <a class="card" href="forces-and-motion/circular-motion.html">
+      <img class="thumb" src="previews/circular-motion.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Circular Motion</div>
+        <div class="hook">F꜀ = mv²/r — and what really happens when the string breaks.</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<div class="hub-section">
+  <h2>Waves</h2>
+  <div class="card-grid">
+    <a class="card" href="waves/wave-properties.html">
+      <img class="thumb" src="previews/wave-properties.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Wave Properties</div>
+        <div class="hook">Transverse vs longitudinal, and why v = fλ.</div>
+      </div>
+    </a>
+    <a class="card" href="waves/superposition-interference.html">
+      <img class="thumb" src="previews/superposition-interference.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Superposition &amp; Interference</div>
+        <div class="hook">Two pulses meet, add, and pass through each other unaffected.</div>
+      </div>
+    </a>
+    <a class="card" href="waves/standing-waves-resonance.html">
+      <img class="thumb" src="previews/standing-waves-resonance.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Standing Waves &amp; Resonance</div>
+        <div class="hook">Why only certain driving frequencies make the string swell.</div>
+      </div>
+    </a>
+    <a class="card" href="waves/doppler-effect.html">
+      <img class="thumb" src="previews/doppler-effect.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">The Doppler Effect</div>
+        <div class="hook">The source's frequency never changes — only what you hear does.</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<div class="hub-section">
+  <h2>Optics</h2>
+  <div class="card-grid">
+    <a class="card" href="optics/reflection-refraction.html">
+      <img class="thumb" src="previews/reflection-refraction.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Reflection &amp; Refraction</div>
+        <div class="hook">Snell's law, and why total internal reflection only goes one way.</div>
+      </div>
+    </a>
+    <a class="card" href="optics/lenses.html">
+      <img class="thumb" src="previews/lenses.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Lenses &amp; Ray Diagrams</div>
+        <div class="hook">Converging vs diverging lenses — real, virtual, upright, inverted.</div>
+      </div>
+    </a>
+    <a class="card" href="optics/total-internal-reflection.html">
+      <img class="thumb" src="previews/total-internal-reflection.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Total Internal Reflection &amp; Fibre Optics</div>
+        <div class="hook">Why light stays trapped inside a bent fibre — until it doesn't.</div>
+      </div>
+    </a>
+    <a class="card" href="optics/diffraction-interference.html">
+      <img class="thumb" src="previews/diffraction-interference.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Diffraction &amp; Interference of Light</div>
+        <div class="hook">Single-slit vs Young's double-slit — the same wave principle, live.</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<h1 class="subject-title">Biology</h1>
+
+<div class="hub-section">
+  <h2>Genetics</h2>
+  <div class="card-grid">
+    <a class="card" href="genetics/dna-structure.html">
+      <img class="thumb" src="previews/dna-structure.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">DNA Structure &amp; Replication</div>
+        <div class="hook">The double helix, base pairing, and semi-conservative replication.</div>
+      </div>
+    </a>
+    <a class="card" href="genetics/meiosis.html">
+      <img class="thumb" src="previews/meiosis.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Meiosis &amp; Inheritance</div>
+        <div class="hook">From one diploid cell to four haploid gametes — crossing over &amp; independent assortment.</div>
+      </div>
+    </a>
+    <a class="card" href="genetics/punnett-squares.html">
+      <img class="thumb" src="previews/punnett-squares.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Punnett Squares &amp; Genetic Crosses</div>
+        <div class="hook">Monohybrid and dihybrid crosses, with live genotype/phenotype ratios.</div>
+      </div>
+    </a>
+    <a class="card" href="genetics/natural-selection.html">
+      <img class="thumb" src="previews/natural-selection.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Natural Selection &amp; Evolution</div>
+        <div class="hook">Camouflage selection pressure shifts a population's traits over generations.</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<h1 class="subject-title">Chemistry</h1>
+
+<div class="hub-section">
+  <h2>Atomic Structure</h2>
+  <div class="card-grid">
+    <a class="card" href="atomic-structure/plum-pudding-model.html">
+      <img class="thumb" src="previews/plum-pudding-model.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Plum Pudding Model</div>
+        <div class="hook">Thomson's atom: electrons embedded in a ball of positive charge.</div>
+      </div>
+    </a>
+    <a class="card" href="atomic-structure/rutherford-experiment.html">
+      <img class="thumb" src="previews/rutherford-experiment.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Rutherford Experiment</div>
+        <div class="hook">The gold foil experiment: why we believe in a tiny, dense nucleus.</div>
+      </div>
+    </a>
+    <a class="card" href="atomic-structure/rutherford-model.html">
+      <img class="thumb" src="previews/rutherford-model.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Rutherford Model</div>
+        <div class="hook">The planetary atom — and why it couldn't actually work.</div>
+      </div>
+    </a>
+    <a class="card" href="atomic-structure/bohr-model.html">
+      <img class="thumb" src="previews/bohr-model.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Bohr Model</div>
+        <div class="hook">Electron shells, energy levels, and photons on jumping.</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<div class="hub-section">
+  <h2>Acids &amp; Bases</h2>
+  <div class="card-grid">
+    <a class="card" href="chemistry/ph-scale.html">
+      <img class="thumb" src="previews/ph-scale.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">pH &amp; Indicators</div>
+        <div class="hook">Why does the pH scale go red to purple?</div>
+      </div>
+    </a>
+    <a class="card" href="chemistry/neutralisation.html">
+      <img class="thumb" src="previews/neutralisation.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Neutralisation (Titration)</div>
+        <div class="hook">Watch the pH curve jump at the equivalence point.</div>
+      </div>
+    </a>
+    <a class="card" href="chemistry/acid-reactions.html">
+      <img class="thumb" src="previews/acid-reactions.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Reactions of Acids</div>
+        <div class="hook">Metals, carbonates and bases — what gas comes off?</div>
+      </div>
+    </a>
+    <a class="card" href="chemistry/combustion.html">
+      <img class="thumb" src="previews/combustion.png" alt="" loading="lazy">
+      <div class="card-body">
+        <div class="title">Combustion</div>
+        <div class="hook">Why does a smoky yellow flame mean wasted fuel?</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<script>window.BOOT_DONE = true;</script>
+</body>
+</html>

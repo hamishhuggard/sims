@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projectile Motion — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', VX_COL = '#16a34a', VY_COL = '#2563eb', V_COL = '#dc2626';
+const PATH_COL = '#94a3b8', GHOST_COL = '#f59e0b';
+
+const GRAVS = { earth: 9.8, moon: 1.6, mars: 3.7 };
+
+const S = {
+  speed: 18, angle: 45, gravity: 'earth',
+  showComponents: true, showTrail: true, showGhost: false, labels: true,
+  running: false, simT: 0
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Projectile Motion', subtitle: 'Horizontal & vertical motion are independent — drag to orbit, scroll to zoom' });
+
+const gp = ui.group('Launch');
+ui.slider(gp, 'Launch speed v₀', { min: 5, max: 30, step: 1, value: 18, fmt: v => v.toFixed(0) + ' m/s' }, v => { S.speed = v; buildPath(); });
+ui.slider(gp, 'Launch angle θ', { min: 5, max: 85, step: 1, value: 45, fmt: v => v.toFixed(0) + '°' }, v => { S.angle = v; buildPath(); });
+ui.select(gp, 'Gravity', [
+  { value: 'earth', label: 'Earth (9.8 m/s²)' },
+  { value: 'moon', label: 'Moon (1.6 m/s²)' },
+  { value: 'mars', label: 'Mars (3.7 m/s²)' }
+], 'earth', v => { S.gravity = v; buildPath(); });
+ui.buttons(gp, [{ label: '🚀 Launch', onClick: () => { S.running = true; S.simT = 0; }, primary: true }, { label: '⟲ Reset', onClick: () => { S.running = false; S.simT = 0; } }]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Velocity components', true, v => S.showComponents = v, { swatch: VX_COL });
+ui.toggle(gv, 'Trajectory trail', true, v => S.showTrail = v);
+ui.toggle(gv, 'Compare complementary angle (90° − θ)', false, v => { S.showGhost = v; buildPath(); }, { swatch: GHOST_COL });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roR = ui.readout(gr, 'Range R = v₀²sin(2θ)/g', '');
+const roHt = ui.readout(gr, 'Max height H', '');
+const roT = ui.readout(gr, 'Time of flight T', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 26, yaw: 0.5, pitch: 0.28 });
+
+let path = [], ghostPath = [], flightT = 0, range = 0, maxH = 0, ghostRange = 0;
+let worldScale = 1; // real metres -> rendered units; see buildPath()
+
+function trajectory(v0, angleDeg, g) {
+  const th = angleDeg * Math.PI / 180;
+  const vx = v0 * Math.cos(th), vy0 = v0 * Math.sin(th);
+  const T = 2 * vy0 / g;
+  const R = vx * T;
+  const H = (vy0 * vy0) / (2 * g);
+  const pts = [];
+  const N = 60;
+  for (let i = 0; i <= N; i++) {
+    const t = T * i / N;
+    const x = vx * t, y = vy0 * t - 0.5 * g * t * t;
+    pts.push([x, y, 0]);
+  }
+  return { pts, T, R, H, vx, vy0 };
+}
+
+// world units budget the camera can comfortably show (engine clamps cam.dist <= 80)
+const MAX_EXTENT = 30;
+
+function buildPath() {
+  const g = GRAVS[S.gravity];
+  const tr = trajectory(S.speed, S.angle, g);
+  flightT = tr.T; range = tr.R; maxH = tr.H;
+  let extentH = maxH;
+  let ghostH = 0;
+  if (S.showGhost) {
+    const tr2 = trajectory(S.speed, 90 - S.angle, g);
+    ghostRange = tr2.R; ghostH = tr2.H;
+    extentH = Math.max(extentH, ghostH);
+  } else { ghostRange = 0; }
+  const spanR = Math.max(range, ghostRange);
+  // real speed/angle/gravity combos can reach hundreds of metres (e.g. moon
+  // gravity + high speed) — rescale the *rendered geometry*, not just the
+  // camera, so it always fits within the engine's cam.dist <= 80 clamp.
+  // Readouts (range/height/time) always show the real, unscaled physics.
+  worldScale = Math.min(1, MAX_EXTENT / Math.max(spanR, extentH * 2.2, 1));
+
+  path = tr.pts.map(p => [p[0] * worldScale, p[1] * worldScale, 0]);
+  if (S.showGhost) {
+    const tr2 = trajectory(S.speed, 90 - S.angle, g);
+    ghostPath = tr2.pts.map(p => [p[0] * worldScale, p[1] * worldScale, 0]);
+  } else ghostPath = [];
+
+  const scaledSpanR = spanR * worldScale, scaledExtentH = extentH * worldScale;
+  const fitDist = Math.max(scaledSpanR, scaledExtentH * 2.2, 8) * 1.15;
+  eng.cam.dist = Math.max(10, Math.min(78, fitDist));
+  eng.cam.target = [scaledSpanR / 2, scaledExtentH * 0.35, 0];
+}
+buildPath();
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+  if (S.running) {
+    S.simT += dt;
+    if (S.simT > flightT) { S.simT = flightT; S.running = false; }
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  const rangeS = range * worldScale, ghostRangeS = ghostRange * worldScale;
+  const span = Math.max(rangeS, ghostRangeS, 10) + 4;
+  for (let g = 0; g <= span + 0.01; g += span / 8) {
+    eng.line([[g, 0, -4], [g, 0, 4]], { color: '#eef2f7', width: 1.5 });
+  }
+  eng.line([[0, 0, -4], [span, 0, -4]], { color: '#eef2f7', width: 1.5 });
+  eng.line([[0, 0, 4], [span, 0, 4]], { color: '#eef2f7', width: 1.5 });
+
+  // launch platform
+  eng.box([0, -0.15, 0], 0.35, 0.3, 0.7, '#475569', { stroke: INK, strokeWidth: 2 });
+
+  if (S.showTrail && path.length > 1) eng.line(path, { color: PATH_COL, width: 3, dash: [6, 6] });
+  if (S.showGhost && ghostPath.length > 1) eng.line(ghostPath, { color: GHOST_COL, width: 3, dash: [6, 6] });
+
+  // moving ball along the closed-form path (exact kinematics, no per-frame integration);
+  // position computed in real metres, then rendered at worldScale like the path
+  const g = GRAVS[S.gravity];
+  const th = S.angle * Math.PI / 180;
+  const vx = S.speed * Math.cos(th), vy0 = S.speed * Math.sin(th);
+  const tt = Math.min(S.simT, flightT);
+  const bx = vx * tt, by = Math.max(0, vy0 * tt - 0.5 * g * tt * tt);
+  const bxS = bx * worldScale, byS = by * worldScale;
+  eng.sphere([bxS, byS, 0], 0.35, '#dc2626', { stroke: INK, strokeWidth: 2 });
+
+  if (S.showComponents && S.running) {
+    const cvy = vy0 - g * tt;
+    eng.arrow([bxS, byS, 0], [bxS + vx * worldScale * 0.3, byS, 0], { color: VX_COL, width: 4, label: S.labels ? 'vₓ' : '' });
+    eng.arrow([bxS, byS, 0], [bxS, byS + cvy * worldScale * 0.3, 0], { color: VY_COL, width: 4, label: S.labels ? 'v_y' : '' });
+  }
+
+  if (S.labels) {
+    eng.label([rangeS, 0.5, 0], 'R = ' + range.toFixed(1) + ' m', { color: '#475569', size: 15, lift: 2 });
+    if (S.showGhost) eng.label([ghostRangeS, 0.5, 1.6], '(90°−θ): R = ' + ghostRange.toFixed(1) + ' m', { color: GHOST_COL, size: 13, lift: 2 });
+  }
+
+  eng.flush(ctx);
+
+  roR.set(range.toFixed(1) + ' m');
+  roHt.set(maxH.toFixed(1) + ' m');
+  roT.set(flightT.toFixed(2) + ' s');
+  foot.set('Horizontal velocity stays <b>constant</b> (no horizontal force); vertical velocity changes at <b>g</b> — the two components are totally independent, which is why the path is a parabola.' +
+    (S.showGhost ? ' &nbsp;θ and (90°−θ) give the <b>same range</b> — same sin(2θ).' : ''));
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

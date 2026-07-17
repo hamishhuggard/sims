@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neutralisation (Titration) — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script src="../lib/vessel.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const H_COL = '#e63946', OH_COL = '#2563eb', NA_COL = '#94a3b8', CL_COL = '#86efac';
+const STAND = '#64748b', STAND_DARK = '#475569';
+
+/* universal indicator ramp, index = round(pH), 0..14 — shared with ph-scale.html */
+const UNIVERSAL = ['#c81d25', '#e01b24', '#f04e23', '#f68b1f', '#fbba16', '#f7e017', '#c6d92d',
+  '#4cae4f', '#3aa17e', '#2e9599', '#2273b5', '#2a52a1', '#31408f', '#3a2f7d', '#46266b'];
+
+function hexToRgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + [(n >> 16) & 255, (n >> 8) & 255, n & 255].join(',') + ',' + a + ')';
+}
+
+/* --- chemistry: 25 mL of 0.100 mol/L HCl titrated with 0.100 mol/L NaOH --- */
+function phAt(Vb) {
+  const c = (2.5 - 0.1 * Vb) / (25 + Vb); // mol/L, +ve = excess acid, -ve = excess base
+  let ph;
+  if (c > 1e-7) ph = -Math.log10(c);
+  else if (c < -1e-7) ph = 14 + Math.log10(-c);
+  else ph = 7;
+  return Math.max(0.3, Math.min(13.7, ph));
+}
+
+const S = {
+  Vb: 0,            // mL NaOH added
+  dripRate: 1.5,     // mL/s
+  running: false,
+  indicator: 'universal', // universal | phenolphthalein
+  showIons: true, showGraph: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Neutralisation (Titration)', subtitle: 'HCl + NaOH → NaCl + H₂O — drag to orbit, scroll to zoom' });
+
+const gc = ui.group('Titration');
+let startBtn;
+const btnRow = ui.buttons(gc, [
+  { label: '▶ Start drip', primary: true, onClick: () => {
+      S.running = !S.running;
+      startBtn.textContent = S.running ? '⏸ Pause drip' : '▶ Start drip';
+    } },
+  { label: '+1 mL', onClick: () => { S.Vb = Math.min(50, S.Vb + 1); } },
+  { label: '⟲ Reset', onClick: () => {
+      S.Vb = 0; S.running = false; drops.length = 0;
+      startBtn.textContent = '▶ Start drip';
+    } }
+]);
+startBtn = btnRow.querySelectorAll('button')[0];
+ui.slider(gc, 'Drip rate', { min: 0.5, max: 5, step: 0.5, value: 1.5, fmt: v => v.toFixed(1) + ' mL/s' }, v => S.dripRate = v);
+
+const gi = ui.group('Indicator');
+ui.segment(gi, null, [
+  { value: 'universal', label: 'Universal' },
+  { value: 'phenolphthalein', label: 'Phenolphthalein' }
+], 'universal', v => S.indicator = v);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Ions', true, v => S.showIons = v);
+ui.toggle(gv, 'pH graph', true, v => S.showGraph = v);
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roVb = ui.readout(gr, 'NaOH added', '0.0 mL');
+const roPH = ui.readout(gr, 'pH', '1.00');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 15, yaw: 0.55, pitch: 0.18 });
+
+/* flask: base, shoulder, neck */
+const FLASK = { rBase: 1.4, rNeck: 0.35, y0: -1.6, yShoulder: -0.3, y1: 1.0 };
+/* burette: slim tube above, tap nub near its base, tip where drops spawn */
+const BUR = { r: 0.28, y0: 1.7, y1: 4.1 };
+const TIP_Y = BUR.y0 - 0.15;
+
+const swarm = ParticleSwarm({ r: FLASK.rBase * 0.75, y0: FLASK.y0 + 0.1, y1: 0 });
+const drops = []; // { y }
+let dropTimer = 0;
+
+function flaskLevel() {
+  // 25 mL initial + Vb added, visually scaled
+  return FLASK.y0 + 0.025 * (25 + S.Vb);
+}
+function buretteLevel() {
+  // burette column represents 50 mL over its height; empties as Vb rises
+  return BUR.y0 + 0.048 * (50 - S.Vb);
+}
+
+function liquidColour(ph) {
+  if (S.indicator === 'phenolphthalein') {
+    return ph > 8.3 ? 'rgba(236,72,153,0.5)' : 'rgba(210,225,235,0.35)';
+  }
+  return hexToRgba(UNIVERSAL[Math.round(ph)], 0.55);
+}
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  if (S.running && S.Vb < 50) {
+    S.Vb = Math.min(50, S.Vb + S.dripRate * dt);
+    dropTimer -= dt;
+    if (dropTimer <= 0) {
+      drops.push({ y: TIP_Y });
+      dropTimer = Math.max(0.08, 0.55 / S.dripRate);
+    }
+  }
+  if (S.Vb >= 50 && S.running) {
+    S.running = false;
+    startBtn.textContent = '▶ Start drip';
+  }
+
+  const ph = phAt(S.Vb);
+  const level = flaskLevel();
+
+  /* advance falling drops, remove on landing */
+  for (let i = drops.length - 1; i >= 0; i--) {
+    drops[i].y -= 3.2 * dt;
+    if (drops[i].y <= level) drops.splice(i, 1);
+  }
+
+  /* ion counts — same shape as ph-scale.html's H+/OH- curve */
+  const nH = Math.max(0, Math.min(24, Math.round(2 * Math.pow(10, (7 - ph) / 2.6))));
+  const nOH = Math.max(0, Math.min(24, Math.round(2 * Math.pow(10, (ph - 7) / 2.6))));
+  const nNa = Math.max(0, Math.min(14, Math.round(S.Vb / 50 * 14)));
+  const nCl = 10;
+
+  swarm.setRegion({ y1: level - 0.05 });
+  swarm.want('H+', { n: S.showIons ? nH : 0, color: H_COL, radius: 0.09, label: '+', speed: 0.8 });
+  swarm.want('OH-', { n: S.showIons ? nOH : 0, color: OH_COL, radius: 0.09, label: '−', speed: 0.7 });
+  swarm.want('Na+', { n: S.showIons ? nNa : 0, color: NA_COL, radius: 0.08, label: '+', speed: 0.55 });
+  swarm.want('Cl-', { n: S.showIons ? nCl : 0, color: CL_COL, radius: 0.08, label: '−', speed: 0.55 });
+  swarm.step(dt);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  /* bench grid */
+  for (let g = -4; g <= 4.01; g += 2) {
+    eng.line([[g, FLASK.y0 - 0.02, -4], [g, FLASK.y0 - 0.02, 4]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-4, FLASK.y0 - 0.02, g], [4, FLASK.y0 - 0.02, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  /* retort stand holding the burette */
+  eng.box([-1.9, 1.1, 0], 0.06, 2.7, 0.06, STAND, { stroke: INK, strokeWidth: 1 });
+  eng.box([-1.9, FLASK.y0, 0], 0.5, 0.03, 0.5, STAND_DARK, { stroke: INK, strokeWidth: 1 });
+  eng.box([-1.0, 3.7, 0], 0.9, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1 });
+
+  /* burette */
+  drawBeaker(eng, {
+    r: BUR.r, y0: BUR.y0, y1: BUR.y1, level: buretteLevel(),
+    liquid: 'rgba(160,190,225,0.45)'
+  });
+  eng.box([0, BUR.y0 - 0.15, 0], 0.14, 0.15, 0.14, '#334155', { stroke: INK, strokeWidth: 1.5 });
+  if (S.labels) eng.label([0, BUR.y1 + 0.35, 0], 'NaOH (0.100 mol/L)', { color: '#475569', size: 15, lift: 3 });
+
+  /* falling drops */
+  for (const d of drops) eng.sphere([0, d.y, 0], 0.07, '#60a5fa');
+
+  /* flask + liquid + ions */
+  drawFlask(eng, Object.assign({}, FLASK, { level, liquid: liquidColour(ph) }));
+  swarm.draw(eng, S.labels);
+  if (S.labels) eng.label([FLASK.rBase + 0.5, FLASK.y0 + 0.3, 0], 'HCl (0.100 mol/L, 25 mL)', { color: '#475569', size: 15, lift: 2 });
+
+  eng.flush(ctx);
+
+  if (S.showGraph) drawGraph(ph);
+
+  roVb.set(S.Vb.toFixed(1) + ' mL');
+  roPH.set(ph.toFixed(2));
+
+  const region = S.Vb < 24.5 ? 'excess acid' : (S.Vb > 25.5 ? 'excess base' : 'at / near equivalence');
+  foot.set('acid + base &rarr; salt + water &nbsp;&middot;&nbsp; <b>HCl + NaOH &rarr; NaCl + H&#8322;O</b> &mdash; ' +
+    'H&#8314; and OH&#8315; combine to make water; Na&#8314; and Cl&#8315; are spectator ions. Currently: <b>' + region + '</b>, pH ' + ph.toFixed(2));
+
+  requestAnimationFrame(frame);
+}
+
+/* pH vs volume titration curve, bottom-left 2D overlay */
+function drawGraph(ph) {
+  const gw = Math.min(430, W() * 0.42), gh = 200;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  const mx = gx + 40, mw = gw - 54, my = gy + 14, mh = gh - 44;
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.lineTo(mx + mw, my + mh); ctx.stroke();
+  Draw.label(ctx, 'pH', gx + 16, my + 6, { size: 13, color: '#475569' });
+  Draw.label(ctx, '14', mx - 10, my, { size: 12, color: '#475569', align: 'right' });
+  Draw.label(ctx, '0', mx - 10, my + mh, { size: 12, color: '#475569', align: 'right' });
+  Draw.label(ctx, 'Volume NaOH added (mL) &rarr;'.replace('&rarr;', '→'), mx + mw / 2, gy + gh - 12, { size: 12, color: '#475569' });
+  Draw.label(ctx, '50', mx + mw, my + mh + 14, { size: 11, color: '#475569' });
+  Draw.label(ctx, '0', mx, my + mh + 14, { size: 11, color: '#475569' });
+
+  // equivalence point marker
+  const eqX = mx + (25 / 50) * mw;
+  ctx.strokeStyle = '#cbd5e1'; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(eqX, my); ctx.lineTo(eqX, my + mh); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // the S-curve
+  ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 3.5; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (let i = 0; i <= 100; i++) {
+    const v = (i / 100) * 50;
+    const y = my + mh - (phAt(v) / 14) * mh;
+    const x = mx + (v / 50) * mw;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // current point
+  const cx = mx + (S.Vb / 50) * mw, cy = my + mh - (ph / 14) * mh;
+  ctx.fillStyle = INK;
+  ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill();
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

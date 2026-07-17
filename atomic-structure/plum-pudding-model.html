@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plum Pudding Model — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const POS_COL = '#e63946', NEG_COL = '#2563eb';
+
+const S = {
+  n: 8,
+  showCloud: true, showElectrons: true, vibrate: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Plum Pudding Model', subtitle: "Thomson's 1904 atom — drag to orbit, scroll to zoom" });
+
+const gc = ui.group('Electrons');
+ui.slider(gc, 'Number of electrons', { min: 1, max: 20, step: 1, value: 8, fmt: v => Math.round(v) }, v => S.n = Math.round(v));
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Positive charge cloud', true, v => S.showCloud = v, { swatch: POS_COL });
+ui.toggle(gv, 'Electrons', true, v => S.showElectrons = v, { swatch: NEG_COL });
+ui.toggle(gv, 'Vibration', true, v => S.vibrate = v);
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roPos = ui.readout(gr, 'Positive charge', '');
+const roNeg = ui.readout(gr, 'Electrons', '');
+const roNet = ui.readout(gr, 'Net charge', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 9, yaw: 0.5, pitch: 0.3 });
+
+const CLOUD_R = 1.8;
+const MAX_E = 20;
+
+/* precompute fixed-ish positions for up to MAX_E electrons, rejection-sampled
+   so they don't clump; slider reveals a prefix of this pool */
+function randomInSphere(r) {
+  while (true) {
+    const p = [(Math.random() * 2 - 1) * r, (Math.random() * 2 - 1) * r, (Math.random() * 2 - 1) * r];
+    if (v3.len(p) <= r) return p;
+  }
+}
+const electrons = [];
+for (let i = 0; i < MAX_E; i++) {
+  electrons.push({
+    base: randomInSphere(CLOUD_R * 0.72),
+    dir: v3.norm([Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5]),
+    freq: 1.2 + Math.random() * 1.6,
+    phase: Math.random() * Math.PI * 2
+  });
+}
+
+let simT = 0, lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t; simT += dt;
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  /* bench grid, faint, below the atom */
+  for (let g = -4; g <= 4.01; g += 2) {
+    eng.line([[g, -CLOUD_R - 0.6, -4], [g, -CLOUD_R - 0.6, 4]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-4, -CLOUD_R - 0.6, g], [4, -CLOUD_R - 0.6, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  if (S.showCloud) {
+    eng.sphere([0, 0, 0], CLOUD_R, 'rgba(230,57,70,0.28)', { highlight: 'rgba(248,113,113,0.4)', stroke: 'rgba(230,57,70,0.55)', strokeWidth: 2 });
+  }
+
+  if (S.showElectrons) {
+    for (let i = 0; i < S.n; i++) {
+      const e = electrons[i];
+      const amp = S.vibrate ? 0.12 * Math.sin(simT * e.freq + e.phase) : 0;
+      const p = v3.add(e.base, v3.mul(e.dir, amp));
+      eng.sphere(p, 0.16, NEG_COL, { label: S.labels ? '−' : '', stroke: 'rgba(26,26,46,0.4)', strokeWidth: 1.5 });
+    }
+  }
+
+  if (S.labels) eng.label([0, -CLOUD_R - 0.3, 0], "Thomson's atom", { color: '#475569', size: 15, lift: 2 });
+
+  eng.flush(ctx);
+
+  roPos.set('+' + S.n);
+  roNeg.set(String(S.n));
+  roNet.set('0 (neutral)');
+
+  foot.set("Thomson's <b>plum pudding model</b> (1904): the atom is a sphere of spread-out positive charge, " +
+    "with electrons (<b>e⁻</b>) embedded in it like plums in a pudding &mdash; no nucleus, mostly solid, positive and negative charge exactly balance.");
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

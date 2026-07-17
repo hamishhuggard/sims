@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Total Internal Reflection &amp; Fibre Optics — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const RAY_COL = '#f59e0b', ESCAPE_COL = '#dc2626', CORE_COL = '#bae6fd';
+
+const S = {
+  nCore: 1.50,
+  entryAngle: 70, // measured from the fibre's own wall-normal at entry
+  bend: 15,       // degrees the fibre kinks by, partway along
+  speedMul: 1,
+  showNormals: false, labels: true, running: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Total Internal Reflection & Fibre Optics', subtitle: 'Why light stays trapped inside a fibre — drag to orbit, scroll to zoom' });
+
+const gf = ui.group('Fibre');
+ui.slider(gf, 'Core refractive index n', { min: 1.2, max: 2.4, step: 0.02, value: 1.5, fmt: v => v.toFixed(2) }, v => S.nCore = v);
+ui.slider(gf, 'Bend angle', { min: 0, max: 70, step: 1, value: 15, fmt: v => v.toFixed(0) + '°' }, v => S.bend = v);
+
+const gr2 = ui.group('Light ray');
+ui.slider(gr2, 'Entry angle (from wall normal)', { min: 5, max: 85, step: 1, value: 70, fmt: v => v.toFixed(0) + '°' }, v => S.entryAngle = v);
+ui.slider(gr2, 'Speed', { min: 0.3, max: 2.5, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.speedMul = v);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Wall normals', false, v => S.showNormals = v, { swatch: '#94a3b8' });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+ui.buttons(gv, [{ label: '⟲ Relaunch ray', onClick: () => launchRay() }]);
+
+const gd = ui.group('Readings');
+const roCrit = ui.readout(gd, 'Critical angle (core → air)', '');
+const roStatus = ui.readout(gd, 'Ray status', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 18, yaw: 0.15, pitch: 0.25 });
+
+const R = 0.55; // core half-width
+const N_AIR = 1.0;
+
+// two-segment fibre centreline: entry straight, then a kink by S.bend
+let path, dirs, normals;
+function buildPath() {
+  const L1 = 7, L2 = 7;
+  const bendRad = S.bend * Math.PI / 180;
+  const p0 = [-L1, 0, 0];
+  const p1 = [0, 0, 0];
+  const dir2 = [Math.cos(bendRad), -Math.sin(bendRad), 0];
+  const p2 = v3.add(p1, v3.mul(dir2, L2));
+  path = [p0, p1, p2];
+  dirs = [v3.norm(v3.sub(p1, p0)), v3.norm(v3.sub(p2, p1))];
+  normals = dirs.map(d => v3.norm([-d[1], d[0], 0]));
+}
+buildPath();
+let lastBend = S.bend;
+
+/* ray state: position, velocity, current segment index, local offset from centreline (signed) */
+let ray;
+function launchRay() {
+  const seg = 0;
+  const startT = 0.05; // fraction along the first segment
+  const start = v3.lerp(path[0], path[1], startT);
+  const th = S.entryAngle * Math.PI / 180;
+  // velocity aimed at the wall: component along dir + component along normal
+  const dir = dirs[seg], nrm = normals[seg];
+  const vel = v3.norm(v3.add(v3.mul(dir, Math.sin(th)), v3.mul(nrm, Math.cos(th))));
+  ray = { pos: start, vel, seg, trail: [start.slice()], escaped: false, escapeFade: 1 };
+}
+launchRay();
+
+function segLength(i) { return v3.len(v3.sub(path[i + 1], path[i])); }
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - (frame.lastT || t), 0.033); frame.lastT = t;
+
+  if (Math.abs(S.bend - lastBend) > 1e-6) { buildPath(); lastBend = S.bend; launchRay(); }
+
+  const critAngle = Math.asin(Math.min(N_AIR / S.nCore, 1));
+
+  if (S.running) {
+    const speed = 5 * S.speedMul;
+    let remaining = speed * dt;
+    let iterGuard = 0;
+    while (remaining > 1e-6 && iterGuard++ < 20) {
+      if (ray.escaped) {
+        ray.pos = v3.add(ray.pos, v3.mul(ray.vel, remaining));
+        ray.escapeFade -= dt * 0.6;
+        remaining = 0;
+        break;
+      }
+      const seg = ray.seg;
+      const dir = dirs[seg], nrm = normals[seg];
+      const toStart = v3.sub(ray.pos, path[seg]);
+      const along = v3.dot(toStart, dir);
+      const offset = v3.dot(toStart, nrm);
+      // distance to travel before hitting either the wall (offset = +-R) or the segment end
+      const vAlong = v3.dot(ray.vel, dir), vOff = v3.dot(ray.vel, nrm);
+      let tWall = Infinity;
+      if (Math.abs(vOff) > 1e-6) {
+        const target = vOff > 0 ? R : -R;
+        const dtw = (target - offset) / vOff;
+        if (dtw > 1e-9) tWall = dtw;
+      }
+      let tEnd = Infinity;
+      if (vAlong > 1e-6) tEnd = (segLength(seg) - along) / vAlong;
+      const tStep = Math.min(tWall, tEnd, remaining);
+      ray.pos = v3.add(ray.pos, v3.mul(ray.vel, tStep));
+      remaining -= tStep;
+      ray.trail.push(ray.pos.slice());
+      if (tStep === tWall && tWall <= remaining + tStep) {
+        // hit a wall: angle from normal
+        const incidence = Math.acos(Math.min(Math.abs(v3.dot(ray.vel, nrm)), 1));
+        if (incidence >= critAngle) {
+          // total internal reflection: reflect about the normal
+          const d = v3.dot(ray.vel, nrm);
+          ray.vel = v3.sub(ray.vel, v3.mul(nrm, 2 * d));
+        } else {
+          ray.escaped = true;
+        }
+      } else if (tStep === tEnd && seg < path.length - 2) {
+        ray.seg = seg + 1;
+      } else if (tStep === tEnd) {
+        // reached the far end of the fibre — transmitted successfully, relaunch
+        launchRay();
+        break;
+      }
+      if (ray.trail.length > 500) ray.trail.splice(0, ray.trail.length - 500);
+    }
+    if (ray.escaped && ray.escapeFade < 0) launchRay();
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  // draw fibre core as a wireframe tube (not a solid box) per segment — a
+  // solid box would depth-sort as a whole primitive and hide the ray
+  // travelling through its interior (see engine gotcha #4)
+  const HZ = 0.5;
+  for (let s = 0; s < dirs.length; s++) {
+    const dir = dirs[s], nrm = normals[s];
+    const zAxis = [0, 0, 1];
+    const corner = (along, off, z) => v3.add(v3.add(path[s], v3.mul(dir, along)), v3.add(v3.mul(nrm, off), v3.mul(zAxis, z)));
+    const len = segLength(s);
+    const edges = [
+      [corner(0, R, HZ), corner(len, R, HZ)],
+      [corner(0, R, -HZ), corner(len, R, -HZ)],
+      [corner(0, -R, HZ), corner(len, -R, HZ)],
+      [corner(0, -R, -HZ), corner(len, -R, -HZ)]
+    ];
+    for (const [a, b] of edges) eng.line([a, b], { color: CORE_COL, width: 2.5 });
+    // end-cap rectangles only at the very start / very end of the whole fibre
+    if (s === 0 || s === dirs.length - 1) {
+      const along = s === 0 ? 0 : len;
+      const rectPts = [corner(along, R, HZ), corner(along, R, -HZ), corner(along, -R, -HZ), corner(along, -R, HZ)];
+      eng.line([...rectPts, rectPts[0]], { color: CORE_COL, width: 2.5 });
+    }
+    if (S.showNormals) {
+      const mid = v3.lerp(path[s], path[s + 1], 0.5);
+      const nEnd = v3.add(mid, v3.mul(nrm, 1.2));
+      eng.arrow(mid, nEnd, { color: '#94a3b8', width: 2 });
+    }
+  }
+  if (S.labels) {
+    eng.label(path[0], 'entry', { color: '#475569', size: 14, dy: -30, lift: 2 });
+    eng.label(path[path.length - 1], 'exit', { color: '#475569', size: 14, dy: -30, lift: 2 });
+  }
+
+  // ray trail
+  if (ray.trail.length > 1) eng.line(ray.trail, { color: RAY_COL, width: 4 });
+  // live ray head / escaping tail
+  if (ray.escaped) {
+    const far = v3.add(ray.pos, v3.mul(ray.vel, 3));
+    eng.line([ray.pos, far], { color: ESCAPE_COL, width: 3.5, dash: [0.15, 0.15] });
+    if (S.labels) eng.label(ray.pos, 'light escapes!', { color: ESCAPE_COL, size: 14, dy: -20, lift: 3 });
+  }
+  eng.sphere(ray.pos, 0.12, ray.escaped ? ESCAPE_COL : RAY_COL);
+
+  eng.flush(ctx);
+
+  roCrit.set((critAngle * 180 / Math.PI).toFixed(1) + '°');
+  roStatus.set(ray.escaped ? 'escaped through the wall (below critical angle)' : 'trapped by total internal reflection');
+
+  foot.set('Light hitting the core–cladding wall at an angle <b>greater</b> than the critical angle (θc = sin⁻¹(1/n)) undergoes ' +
+    '<b>total internal reflection</b> and stays trapped — this is how optical fibres carry light around bends with almost no loss. ' +
+    'Too sharp a bend, or too shallow an entry angle, and light leaks out instead.');
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

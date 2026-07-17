@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rutherford Model — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const NUCLEUS_COL = '#d97706', ELECTRON_COL = '#2563eb';
+
+const S = {
+  n: 4,
+  showOrbits: true, showElectrons: true, running: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Rutherford Model', subtitle: "Rutherford's 1911 planetary atom — drag to orbit, scroll to zoom" });
+
+const ge = ui.group('Electrons');
+ui.slider(ge, 'Number of electrons', { min: 1, max: 8, step: 1, value: 4, fmt: v => Math.round(v) }, v => { S.n = Math.round(v); rebuildOrbits(); });
+ui.buttons(ge, [{ label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Orbit paths', true, v => S.showOrbits = v, { swatch: '#94a3b8' });
+ui.toggle(gv, 'Electrons', true, v => S.showElectrons = v, { swatch: ELECTRON_COL });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 11, yaw: 0.5, pitch: 0.4 });
+
+let orbits = [];
+function rebuildOrbits() {
+  orbits = [];
+  for (let i = 0; i < S.n; i++) {
+    orbits.push({
+      r: 1.5 + Math.random() * 1.8,          // continuous, arbitrary radius — no fixed shells
+      incl: (Math.random() - 0.5) * Math.PI * 0.8,
+      yaw0: Math.random() * Math.PI * 2,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.35 + Math.random() * 0.5,
+      ecc: Math.random() * 0.25              // slight ellipticity, like a real orbit
+    });
+  }
+}
+rebuildOrbits();
+
+function orbitPoint(o, a) {
+  const rr = o.r * (1 - o.ecc * o.ecc) / (1 + o.ecc * Math.cos(a));
+  const x0 = rr * Math.cos(a), z0 = rr * Math.sin(a);
+  // tilt the orbital plane by inclination, then spin it by yaw0 around the vertical axis
+  const y1 = z0 * Math.sin(o.incl), z1 = z0 * Math.cos(o.incl);
+  const cx = Math.cos(o.yaw0), sx = Math.sin(o.yaw0);
+  return [x0 * cx - z1 * sx, y1, x0 * sx + z1 * cx];
+}
+
+function orbitPts(o) {
+  const pts = [];
+  for (let i = 0; i <= 72; i++) pts.push(orbitPoint(o, (i / 72) * Math.PI * 2));
+  return pts;
+}
+
+let simT = 0, lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+  if (S.running) simT += dt;
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  eng.sphere([0, 0, 0], 0.5, NUCLEUS_COL, { stroke: INK, strokeWidth: 2, label: S.labels ? '+' : '' });
+  if (S.labels) eng.label([0, -0.9, 0], 'nucleus', { color: '#475569', size: 15, lift: 2 });
+
+  for (const o of orbits) {
+    if (S.showOrbits) eng.line(orbitPts(o), { color: 'rgba(148,163,184,0.55)', width: 2, dash: [6, 6] });
+    if (S.showElectrons) {
+      const p = orbitPoint(o, simT * o.speed + o.phase);
+      eng.sphere(p, 0.14, ELECTRON_COL, { label: S.labels ? '−' : '', stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1.5 });
+    }
+  }
+
+  eng.flush(ctx);
+
+  foot.set("Rutherford's original 1911 picture: electrons <b>orbit the nucleus like planets around the sun</b>, at any radius, in any plane &mdash; " +
+    "not yet organised into fixed shells. <b>The problem:</b> classical physics says an orbiting (accelerating) charge should radiate energy " +
+    'and spiral into the nucleus in a fraction of a second &mdash; real atoms don&rsquo;t do that. Bohr\'s fix (1913): fixed shells (see the Bohr Model sim).');
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

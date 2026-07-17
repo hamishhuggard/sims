@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magnetic Fields — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', B_COL = '#7c3aed', CUR = '#d97706';
+const N_COL = '#e63946', S_COL = '#2563eb', COPPER = '#b45309';
+
+const S = {
+  mode: 'magnet',        // magnet | wire | solenoid
+  strength: 1,           // relative current / magnet strength, 0.3x - 2.5x
+  fieldLines: true,
+  arrows: true,
+  compasses: false,
+  labels: true,
+  reversed: false
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Magnetic Fields in 3D', subtitle: 'Bar magnet · current-carrying wire · solenoid — drag to orbit, scroll to zoom' });
+const gm = ui.group('Source');
+ui.segment(gm, null, [
+  { value: 'magnet', label: 'Bar magnet' },
+  { value: 'wire', label: 'Straight wire' },
+  { value: 'solenoid', label: 'Solenoid' }
+], 'magnet', v => { S.mode = v; });
+ui.slider(gm, 'Current / magnet strength', { min: 0.3, max: 2.5, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.strength = v);
+ui.buttons(gm, [{ label: '⇄ Reverse current / flip magnet', onClick: () => { S.reversed = !S.reversed; } }]);
+
+/* stronger source → thicker field lines/arrows, within a sane visual range */
+function lw(base) { return base * Math.max(0.45, Math.min(2.0, 0.5 + 0.55 * S.strength)); }
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Field lines', true, v => S.fieldLines = v, { swatch: B_COL });
+ui.toggle(gs, 'Direction arrows', true, v => S.arrows = v, { swatch: B_COL });
+ui.toggle(gs, 'Compass needles', false, v => S.compasses = v, { swatch: N_COL });
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 14, yaw: 0.55, pitch: 0.32 });
+
+/* ---------- field-line geometry ---------- */
+function circlePts(r, y, n, dir) {
+  // circle around the y axis; dir=+1 follows B for current in +y
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = dir * (i / n) * Math.PI * 2;
+    pts.push([r * Math.cos(t), y, -r * Math.sin(t)]);
+  }
+  return pts;
+}
+// dipole-style field-line loop through the magnet, in the plane at azimuth phi
+function dipoleLoop(L, phi, dir) {
+  const pts = [];
+  const n = 72;
+  for (let i = 0; i <= n; i++) {
+    const th = (i / n) * Math.PI * 2;
+    const r = L * Math.pow(Math.sin(th), 2) + 0.001;
+    const x = r * Math.cos(th) * dir;
+    const rr = r * Math.sin(th);
+    pts.push([x, rr * Math.cos(phi), rr * Math.sin(phi)]);
+  }
+  return pts;
+}
+// solenoid return loop: ellipse in the plane at azimuth phi, offset d from axis
+function solenoidLoop(halfLen, d, D, phi, sign) {
+  const pts = [], n = 72;
+  const cy = (d + D) / 2, ry = (D - d) / 2, rx = halfLen + (D - d) * 0.9;
+  for (let i = 0; i <= n; i++) {
+    const t = (i / n) * Math.PI * 2;
+    const x = rx * Math.cos(t);
+    const yy = sign * (cy + ry * Math.sin(t));
+    pts.push([x, yy * Math.cos(phi), yy * Math.sin(phi)]);
+  }
+  return pts;
+}
+// place an arrowhead partway along a polyline (as a stubby 3D arrow)
+function headAt(pts, frac, col, flip) {
+  const i = Math.max(1, Math.min(pts.length - 1, Math.round(frac * (pts.length - 1))));
+  let a = pts[i - 1], b = pts[i];
+  if (flip) [a, b] = [b, a];
+  const dir = v3.norm(v3.sub(b, a));
+  const mid = v3.lerp(a, b, 0.5);
+  eng.arrow(v3.sub(mid, v3.mul(dir, 0.18)), v3.add(mid, v3.mul(dir, 0.18)), { color: col, width: 4 });
+}
+
+/* ---------- analytic B (for compasses) ---------- */
+function fieldAt(p) {
+  const sgn = S.reversed ? -1 : 1;
+  if (S.mode === 'wire') {
+    const r2 = p[0] * p[0] + p[2] * p[2];
+    if (r2 < 0.05) return [0, 0, 0];
+    return v3.mul([p[2], 0, -p[0]], S.strength * sgn / r2);
+  }
+  // magnet & solenoid: monopole pair along x at ±m
+  const m = S.mode === 'magnet' ? 2 : 2.6;
+  const pN = [sgn * m, 0, 0], pS = [-sgn * m, 0, 0];
+  const dN = v3.sub(p, pN), dS = v3.sub(p, pS);
+  const lN = Math.max(v3.len(dN), 0.4), lS = Math.max(v3.len(dS), 0.4);
+  return v3.mul(v3.add(v3.mul(dN, 1 / (lN * lN * lN)), v3.mul(dS, -1 / (lS * lS * lS))), S.strength);
+}
+
+function drawCompasses() {
+  const span = S.mode === 'wire' ? 5 : 7;
+  const step = span / 2.5;
+  for (let x = -span; x <= span + 0.01; x += step) {
+    for (let z = -span; z <= span + 0.01; z += step) {
+      const p = [x, S.mode === 'wire' ? -0.01 : 0, z];
+      if (S.mode !== 'wire' && Math.abs(x) < 2.6 && Math.abs(z) < 1.4) continue;
+      const B = fieldAt(p);
+      const bl = v3.len(B);
+      if (bl < 1e-4) continue;
+      const d = v3.mul(v3.norm(B), 0.4 + Math.min(0.35, bl * 0.15));
+      // needle: grey circle base + red-tipped arrow
+      eng.sphere(p, 0.07, '#94a3b8');
+      eng.arrow(v3.sub(p, d), v3.add(p, d), { color: N_COL, width: lw(3.5) });
+    }
+  }
+}
+
+/* ---------- scenes ---------- */
+function drawMagnet() {
+  const sgn = S.reversed ? -1 : 1;
+  // two half-boxes: N red, S blue
+  eng.box([sgn * 1, 0, 0], 1, 0.55, 0.55, N_COL, { stroke: INK, strokeWidth: 2 });
+  eng.box([-sgn * 1, 0, 0], 1, 0.55, 0.55, S_COL, { stroke: INK, strokeWidth: 2 });
+  if (S.labels) {
+    eng.label([sgn * 1.1, 0.0, 0.62], 'N', { color: '#fff', size: 30, lift: 2 });
+    eng.label([-sgn * 1.1, 0.0, 0.62], 'S', { color: '#fff', size: 30, lift: 2 });
+  }
+  if (S.fieldLines) {
+    for (const phi of [0, Math.PI / 3, 2 * Math.PI / 3]) {
+      for (const L of [3.2, 5.2, 7.6]) {
+        const pts = dipoleLoop(L, phi, sgn);
+        eng.line(pts, { color: B_COL, width: lw(3.5) });
+        if (S.arrows) {
+          headAt(pts, 0.25, B_COL);        // top lobe traverses N → S
+          headAt(pts, 0.75, B_COL, true);  // bottom lobe param runs S → N, so flip
+        }
+      }
+    }
+    // axis line through the core (inside a magnet the field runs S → N)
+    const ax = [[-9, 0, 0], [9, 0, 0]];
+    eng.line(ax, { color: B_COL, width: lw(3.5) });
+    if (S.arrows) { headAt(ax, 0.15, B_COL, S.reversed); headAt(ax, 0.85, B_COL, S.reversed); }
+  }
+  foot.set('Field lines leave the <b style="color:' + N_COL + '">North</b> pole and enter the <b style="color:' + S_COL + '">South</b> pole. &nbsp;Symbol: <b>B</b> &nbsp;·&nbsp; Unit: tesla (T)');
+}
+
+function drawWire() {
+  const sgn = S.reversed ? -1 : 1;
+  // vertical wire
+  eng.line([[0, -6, 0], [0, 6, 0]], { color: COPPER, width: 9 });
+  const curArrow = sgn > 0 ? [[0, 3.4, 0], [0, 5.4, 0]] : [[0, -3.4, 0], [0, -5.4, 0]];
+  eng.arrow(curArrow[0], curArrow[1], { color: CUR, width: lw(6) });
+  if (S.labels) eng.label([0.0, sgn > 0 ? 6.0 : -6.0, 0], 'I (current)', { color: CUR, dx: 60, size: 20, lift: 3 });
+
+  if (S.fieldLines) {
+    for (const y of [-3, 0, 3]) {
+      for (const r of [1.4, 2.6, 4.0]) {
+        const pts = circlePts(r, y, 60, sgn);
+        eng.line(pts, { color: B_COL, width: lw(3.5) });
+        if (S.arrows) { headAt(pts, 0.2, B_COL); headAt(pts, 0.53, B_COL); headAt(pts, 0.86, B_COL); }
+      }
+    }
+  }
+  foot.set('<b>Right-hand grip rule:</b> thumb points along the current <b style="color:' + CUR + '">I</b>, fingers curl in the direction of <b style="color:' + B_COL + '">B</b>');
+}
+
+function drawSolenoid() {
+  const sgn = S.reversed ? -1 : 1;
+  const a = 1.1, halfLen = 2.6, turns = 9;
+  // coil helix along x
+  const coil = [];
+  const n = turns * 28;
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    // circulation handedness chosen so B inside points +x when sgn = +1
+    const ang = -sgn * t * turns * Math.PI * 2;
+    coil.push([-halfLen + t * 2 * halfLen, a * Math.sin(ang), a * Math.cos(ang)]);
+  }
+  eng.line(coil, { color: COPPER, width: 6 });
+  // leads
+  eng.line([[-halfLen, 0, a], [-halfLen, -3, a], [-halfLen - 1.2, -3, a]], { color: COPPER, width: 5 });
+  eng.line([coil[coil.length - 1], [halfLen, -3, coil[coil.length - 1][2]], [halfLen + 1.2, -3, coil[coil.length - 1][2]]], { color: COPPER, width: 5 });
+  eng.arrow([-halfLen - 1.4, -3, a], [-halfLen - 0.2, -3, a], { color: CUR, width: lw(5), label: S.labels ? 'I' : '' });
+
+  if (S.fieldLines) {
+    // core line
+    const axis = [[-halfLen - 4.5, 0, 0], [halfLen + 4.5, 0, 0]];
+    const core = sgn > 0 ? axis : [axis[1], axis[0]];
+    eng.line(core, { color: B_COL, width: lw(4) });
+    if (S.arrows) { headAt(core, 0.28, B_COL); headAt(core, 0.5, B_COL); headAt(core, 0.72, B_COL); }
+    for (const phi of [0, Math.PI / 2]) {
+      // nested, non-crossing loops: lines nearer the axis return further out
+      for (const [d, D] of [[0.35, 5.2], [0.7, 3.2]]) {
+        for (const sign of [1, -1]) {
+          const pts = solenoidLoop(halfLen, d, D, phi, sign);
+          eng.line(pts, { color: B_COL, width: lw(3) });
+          if (S.arrows) {
+            // ellipse traversal follows B when current is forward; reverse flips it
+            headAt(pts, 0.25, B_COL, sgn < 0);
+            headAt(pts, 0.75, B_COL, sgn < 0);
+          }
+        }
+      }
+    }
+    if (S.labels) {
+      eng.label([sgn * (halfLen + 4.2), 0.7, 0], 'N end', { color: N_COL, size: 20, lift: 3 });
+      eng.label([-sgn * (halfLen + 4.2), 0.7, 0], 'S end', { color: S_COL, size: 20, lift: 3 });
+    }
+  }
+  foot.set('A solenoid makes a field like a bar magnet — uniform and strong inside, loops back around outside. <b>Grip rule:</b> fingers curl with <b style="color:' + CUR + '">I</b>, thumb gives <b style="color:' + B_COL + '">B</b> inside');
+}
+
+function frame() {
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+  if (S.mode === 'magnet') drawMagnet();
+  else if (S.mode === 'wire') drawWire();
+  else drawSolenoid();
+  if (S.compasses) drawCompasses();
+  eng.flush(ctx);
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+frame();
+</script>
+</body>
+</html>

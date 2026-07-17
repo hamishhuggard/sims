@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lenses &amp; Ray Diagrams — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const AXIS_COL = '#94a3b8', OBJ_COL = '#16a34a', IMG_REAL_COL = '#dc2626', IMG_VIRT_COL = '#2563eb';
+const RAY_COLS = ['#f59e0b', '#7c3aed', '#0d9488'];
+
+const S = {
+  lensType: 'converging',
+  f: 3,          // focal length (magnitude)
+  objDist: 6,    // object distance from lens (positive = left of lens)
+  objHeight: 2,
+  showRays: [true, true, true],
+  showImage: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Lenses & Ray Diagrams', subtitle: 'Converging / diverging lenses — drag to orbit, scroll to zoom' });
+
+const gl = ui.group('Lens');
+ui.segment(gl, null, [
+  { value: 'converging', label: 'Converging (convex)' },
+  { value: 'diverging', label: 'Diverging (concave)' }
+], 'converging', v => S.lensType = v);
+ui.slider(gl, 'Focal length f', { min: 1, max: 6, step: 0.5, value: 3, fmt: v => v.toFixed(1) + ' units' }, v => S.f = v);
+
+const go = ui.group('Object');
+ui.slider(go, 'Distance from lens', { min: 1, max: 12, step: 0.25, value: 6, fmt: v => v.toFixed(2) + ' units' }, v => S.objDist = v);
+ui.slider(go, 'Height', { min: 0.5, max: 3, step: 0.25, value: 2, fmt: v => v.toFixed(2) + ' units' }, v => S.objHeight = v);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Ray 1 (parallel → focal pt)', true, v => S.showRays[0] = v, { swatch: RAY_COLS[0] });
+ui.toggle(gv, 'Ray 2 (through centre)', true, v => S.showRays[1] = v, { swatch: RAY_COLS[1] });
+ui.toggle(gv, 'Ray 3 (through near focal pt)', true, v => S.showRays[2] = v, { swatch: RAY_COLS[2] });
+ui.toggle(gv, 'Image', true, v => S.showImage = v);
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roV = ui.readout(gr, 'Image distance v', '');
+const roM = ui.readout(gr, 'Magnification', '');
+const roType = ui.readout(gr, 'Image is', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 20, yaw: 0.0, pitch: 0.12 });
+
+function frame(tms) {
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  const converging = S.lensType === 'converging';
+  const f = converging ? S.f : -S.f;
+  const u = S.objDist; // object distance (positive, to the left at x = -u)
+  const objX = -u, objTopY = S.objHeight;
+
+  // thin lens equation (real-is-positive convention): 1/f = 1/u + 1/v
+  const invV = 1 / f - 1 / u;
+  const v = 1 / invV; // positive = real image on the right, negative = virtual on the left
+  const magnification = -v / u; // negative = inverted, positive = upright
+  const imgY = magnification * objTopY;
+  const real = v > 0;
+
+  // axis
+  eng.line([[-11, 0, 0], [11, 0, 0]], { color: AXIS_COL, width: 2 });
+
+  // Ray 3's lens-plane intersection can land outside a fixed-height lens symbol
+  // (e.g. object inside the focal length) — compute it first so the lens is
+  // always drawn tall enough that every ray visibly meets its surface.
+  const nearF = -f;
+  const denom = nearF - objX;
+  const ray3HitY = Math.abs(denom) > 1e-6 ? objTopY + ((0 - objTopY) / denom) * (0 - objX) : objTopY;
+
+  // lens: a vertical bowed shape drawn as a poly — converging = biconvex
+  // (thickest at centre, tapers to a point top/bottom); diverging = biconcave
+  // (thinnest at centre, flares out top/bottom, with a small min thickness
+  // so it doesn't pinch to zero width)
+  const lensCol = converging ? '#a5f3fc' : '#fecdd3';
+  const halfH = Math.min(Math.max(3.6, Math.abs(ray3HitY) * 1.1, objTopY * 1.1), 9);
+  const lensPts = [];
+  const N = 14;
+  const edgeX = y => converging ? 0.5 * (1 - Math.pow(y / halfH, 2)) : 0.15 + 0.35 * Math.pow(y / halfH, 2);
+  for (let i = 0; i <= N; i++) {
+    const t = i / N, y = -halfH + 2 * halfH * t;
+    lensPts.push([edgeX(y), y, 0]);
+  }
+  for (let i = N; i >= 0; i--) {
+    const t = i / N, y = -halfH + 2 * halfH * t;
+    lensPts.push([-edgeX(y), y, 0]);
+  }
+  eng.poly(lensPts, lensCol, { stroke: INK, strokeWidth: 3 });
+  if (S.labels) eng.label([0, halfH + 0.5, 0], converging ? 'converging lens' : 'diverging lens', { color: '#0e7490', size: 14, lift: 3 });
+
+  // focal points
+  eng.sphere([S.f, 0, 0], 0.12, '#334155');
+  eng.sphere([-S.f, 0, 0], 0.12, '#334155');
+  if (S.labels) { eng.label([S.f, -0.5, 0], 'F', { color: '#334155', size: 15, lift: 2 }); eng.label([-S.f, -0.5, 0], 'F', { color: '#334155', size: 15, lift: 2 }); }
+
+  // object arrow
+  eng.arrow([objX, 0, 0], [objX, objTopY, 0], { color: OBJ_COL, width: 5, label: S.labels ? 'object' : '' });
+
+  // principal rays from the tip of the object to the lens plane (x=0), then continue per lens rule
+  const tip = [objX, objTopY, 0];
+  function drawRay(hitY, outDir, col) {
+    const hit = [0, hitY, 0];
+    eng.line([tip, hit], { color: col, width: 3.5 });
+    // the physical ray really does keep travelling forward after the lens
+    const far = [hit[0] + outDir[0] * 14, hit[1] + outDir[1] * 14, 0];
+    eng.line([hit, far], { color: col, width: 3.5 });
+    // for a virtual image, none of the physical forward rays actually meet —
+    // draw each one's dashed backward extension so they visibly converge at
+    // the apparent (virtual) image point instead.
+    if (!real) {
+      const back = [hit[0] - outDir[0] * 14, hit[1] - outDir[1] * 14, 0];
+      eng.line([hit, back], { color: col, width: 3, dash: [0.15, 0.15] });
+    }
+  }
+
+  // Ray 1: parallel to axis, then through (converging) or away-from (diverging) the far focal point
+  if (S.showRays[0]) {
+    const hitY = objTopY;
+    const dir = converging ? v3.norm([S.f, -hitY, 0]) : v3.norm([S.f, hitY, 0]);
+    drawRay(hitY, dir, RAY_COLS[0]);
+  }
+  // Ray 2: through the centre of the lens, undeviated
+  if (S.showRays[1]) {
+    const dir = v3.norm([u, -objTopY, 0]); // continues along the same line from object through (0,0)
+    drawRay(0, dir, RAY_COLS[1]);
+  }
+  // Ray 3: through the near focal point (converging) or aimed at the far focal point (diverging), then parallel
+  if (S.showRays[2]) {
+    drawRay(ray3HitY, [1, 0, 0], RAY_COLS[2]);
+  }
+
+  // image arrow
+  if (S.showImage && isFinite(v) && Math.abs(v) < 30) {
+    const col = real ? IMG_REAL_COL : IMG_VIRT_COL;
+    eng.arrow([v, 0, 0], [v, imgY, 0], { color: col, width: 5, label: S.labels ? (real ? 'real image' : 'virtual image') : '' });
+  }
+
+  eng.flush(ctx);
+
+  roV.set((isFinite(v) ? v.toFixed(2) : '∞') + ' units' + (real ? ' (right of lens)' : ' (left of lens)'));
+  roM.set(magnification.toFixed(2) + '×');
+  const upright = magnification > 0;
+  roType.set((real ? 'real, ' : 'virtual, ') + (upright ? 'upright' : 'inverted') + (Math.abs(magnification) > 1 ? ', enlarged' : Math.abs(magnification) < 1 ? ', diminished' : ', same size'));
+
+  foot.set('<b>1/f = 1/u + 1/v</b> &mdash; converging lenses form real, inverted images when the object is beyond F, ' +
+    'and magnified virtual upright images when inside F. Diverging lenses always form a diminished, upright, virtual image.');
+
+  requestAnimationFrame(frame);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

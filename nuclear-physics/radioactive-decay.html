@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radioactive Decay &amp; Half-Life — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const PARENT_COL = '#e63946', STABLE_COL = '#94a3b8';
+const ALPHA_COL = '#dc2626', BETA_COL = '#2563eb', GAMMA_COL = '#f59e0b';
+
+const S = {
+  decayType: 'alpha', // alpha | beta | gamma
+  halfLife: 4,         // seconds (simulation time, not real-world)
+  n: 60,
+  running: true,
+  showParticles: true, showGraph: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Radioactive Decay & Half-Life', subtitle: 'Each nucleus decays at random, but the population follows a predictable curve — drag to orbit, scroll to zoom' });
+
+const gd = ui.group('Decay type');
+ui.segment(gd, null, [
+  { value: 'alpha', label: 'Alpha (α)' },
+  { value: 'beta', label: 'Beta (β)' },
+  { value: 'gamma', label: 'Gamma (γ)' }
+], 'alpha', v => S.decayType = v);
+
+const gs = ui.group('Sample');
+ui.slider(gs, 'Half-life', { min: 1, max: 10, step: 0.5, value: 4, fmt: v => v.toFixed(1) + ' s' }, v => S.halfLife = v);
+ui.slider(gs, 'Number of nuclei', { min: 10, max: 100, step: 5, value: 60, fmt: v => Math.round(v) }, v => { S.n = Math.round(v); resetSample(); });
+let runBtn;
+const runRow = ui.buttons(gs, [
+  { label: '⏸ Pause', primary: true, onClick: () => { S.running = !S.running; runBtn.textContent = S.running ? '⏸ Pause' : '▶ Run'; } },
+  { label: '⟲ Reset', onClick: resetSample }
+]);
+runBtn = runRow.querySelectorAll('button')[0];
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Emitted particles', true, v => S.showParticles = v);
+ui.toggle(gv, 'Decay curve graph', true, v => S.showGraph = v);
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roRemain = ui.readout(gr, 'Nuclei remaining', '');
+const roTime = ui.readout(gr, 'Time elapsed', '');
+const roPct = ui.readout(gr, 'Decayed', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 11, yaw: 0.5, pitch: 0.35 });
+
+let nuclei = [], particles = [], samples = [], simT = 0, lastT = 0;
+
+function resetSample() {
+  nuclei = [];
+  const side = Math.ceil(Math.sqrt(S.n));
+  let i = 0;
+  for (let gx = 0; gx < side; gx++) {
+    for (let gz = 0; gz < side; gz++) {
+      if (i >= S.n) break;
+      nuclei.push({
+        x: (gx - side / 2 + 0.5) * 0.55, z: (gz - side / 2 + 0.5) * 0.55,
+        y: (Math.random() - 0.5) * 0.3, decayed: false
+      });
+      i++;
+    }
+  }
+  particles = [];
+  samples = [{ t: 0, n: S.n }];
+  simT = 0;
+}
+resetSample();
+
+function spawnParticle(x, y, z) {
+  if (!S.showParticles) return;
+  const dir = v3.norm([Math.random() - 0.5, Math.random() * 0.6 + 0.2, Math.random() - 0.5]);
+  const col = S.decayType === 'alpha' ? ALPHA_COL : (S.decayType === 'beta' ? BETA_COL : GAMMA_COL);
+  particles.push({ x, y, z, dir, life: 1.2, maxLife: 1.2, col });
+}
+
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  if (S.running) {
+    simT += dt;
+    const pDecay = 1 - Math.exp(-Math.LN2 / S.halfLife * dt);
+    let remaining = 0;
+    for (const nuc of nuclei) {
+      if (nuc.decayed) continue;
+      if (Math.random() < pDecay) {
+        nuc.decayed = true;
+        spawnParticle(nuc.x, nuc.y, nuc.z);
+      } else remaining++;
+    }
+    samples.push({ t: simT, n: remaining });
+    if (samples.length > 2000) samples.shift();
+  }
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.dir[0] * 3 * dt; p.y += p.dir[1] * 3 * dt; p.z += p.dir[2] * 3 * dt;
+    p.life -= dt;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -3; g <= 3.01; g += 1.5) {
+    eng.line([[g, -1.2, -3], [g, -1.2, 3]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-3, -1.2, g], [3, -1.2, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  for (const nuc of nuclei) {
+    eng.sphere([nuc.x, nuc.y, nuc.z], 0.2, nuc.decayed ? STABLE_COL : PARENT_COL, { stroke: INK, strokeWidth: 1 });
+  }
+  for (const p of particles) {
+    const alpha = Math.max(0, p.life / p.maxLife);
+    eng.sphere([p.x, p.y, p.z], S.decayType === 'alpha' ? 0.12 : 0.08, p.col, { highlight: p.col });
+  }
+
+  if (S.labels) {
+    eng.label([0, -1.6, 0], 'undecayed', { color: PARENT_COL, size: 15, lift: 2, dx: -70 });
+    eng.label([0, -1.6, 0], 'decayed (stable)', { color: '#64748b', size: 15, lift: 2, dx: 70 });
+  }
+
+  eng.flush(ctx);
+
+  if (S.showGraph) drawGraph();
+
+  const remaining = nuclei.filter(n => !n.decayed).length;
+  roRemain.set(remaining + ' / ' + S.n);
+  roTime.set(simT.toFixed(1) + ' s');
+  roPct.set(Math.round((1 - remaining / S.n) * 100) + '%');
+
+  const decayName = { alpha: 'an alpha particle (2 protons + 2 neutrons)', beta: 'a beta particle (fast electron)', gamma: 'a gamma ray (pure energy, no particle)' }[S.decayType];
+  foot.set('Half-life = ' + S.halfLife.toFixed(1) + ' s: every half-life, <b>half</b> of the remaining nuclei decay, each emitting ' + decayName + '. ' +
+    'You can\'t predict *which* nucleus decays next, only the odds &mdash; but the population always follows the same curve.');
+
+  requestAnimationFrame(frame);
+}
+
+function drawGraph() {
+  const gw = Math.min(430, W() * 0.42), gh = 190;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)'; ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  const mx = gx + 44, mw = gw - 58, my = gy + 14, mh = gh - 38;
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.lineTo(mx + mw, my + mh); ctx.stroke();
+  Draw.label(ctx, 'nuclei', gx + 20, my + 6, { size: 13, color: '#475569' });
+  Draw.label(ctx, 'time →', mx + mw - 24, gy + gh - 10, { size: 12, color: '#475569' });
+
+  const tSpan = Math.max(S.halfLife * 4, simT, 1);
+  // theoretical curve
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2.5; ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  for (let i = 0; i <= 60; i++) {
+    const tt = (i / 60) * tSpan;
+    const n = S.n * Math.pow(0.5, tt / S.halfLife);
+    const x = mx + (tt / tSpan) * mw, y = my + mh - (n / S.n) * mh;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke(); ctx.setLineDash([]);
+  // actual sampled curve
+  ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    if (s.t > tSpan) break;
+    const x = mx + (s.t / tSpan) * mw, y = my + mh - (s.n / S.n) * mh;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  // half-life marker
+  const hx = mx + (S.halfLife / tSpan) * mw;
+  ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(hx, my); ctx.lineTo(hx, my + mh); ctx.stroke(); ctx.setLineDash([]);
+  Draw.label(ctx, 't½', hx, my - 4, { size: 12, color: '#64748b' });
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

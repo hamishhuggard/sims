@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Circular Motion — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', TENSION_COL = '#dc2626', VEL_COL = '#16a34a', STRING_COL = '#94a3b8';
+
+const S = {
+  speed: 4, radius: 4, mass: 1,
+  showTension: true, showV: true, labels: true,
+  cut: false
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Circular Motion', subtitle: 'A ball whirled on a string — F꜀ = mv²/r — drag to orbit, scroll to zoom' });
+
+const gc = ui.group('The ball on a string');
+ui.slider(gc, 'Speed v', { min: 1, max: 8, step: 0.5, value: 4, fmt: v => v.toFixed(1) + ' m/s' }, v => S.speed = v);
+ui.slider(gc, 'Radius r', { min: 1.5, max: 6, step: 0.5, value: 4, fmt: v => v.toFixed(1) + ' m' }, v => S.radius = v);
+ui.slider(gc, 'Mass m', { min: 0.2, max: 3, step: 0.2, value: 1, fmt: v => v.toFixed(1) + ' kg' }, v => S.mass = v);
+ui.buttons(gc, [
+  { label: '✂️ Cut the string!', onClick: () => cutString(), primary: true },
+  { label: '⟲ Reset', onClick: () => resetSim() }
+]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Tension (centripetal force)', true, v => S.showTension = v, { swatch: TENSION_COL });
+ui.toggle(gv, 'Velocity vector', true, v => S.showV = v, { swatch: VEL_COL });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roFc = ui.readout(gr, 'F꜀ = mv²/r', '');
+const roAc = ui.readout(gr, 'a꜀ = v²/r', '');
+const roT = ui.readout(gr, 'Period T = 2πr/v', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 18, yaw: 0.4, pitch: 0.45 });
+
+let angle, cutPos, cutVel, cutT;
+function resetSim() {
+  angle = 0; S.cut = false; cutPos = null; cutVel = null; cutT = 0;
+}
+function cutString() {
+  if (S.cut) return;
+  S.cut = true;
+  const x = S.radius * Math.cos(angle), z = S.radius * Math.sin(angle);
+  cutPos = [x, 0, z];
+  // tangent direction (direction of travel), speed unchanged — flies off straight, NOT radially outward
+  const tx = -Math.sin(angle), tz = Math.cos(angle);
+  cutVel = [tx * S.speed, 0, tz * S.speed];
+  cutT = 0;
+}
+resetSim();
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  let pos, vel;
+  if (!S.cut) {
+    const omega = S.speed / S.radius;
+    angle += omega * dt;
+    pos = [S.radius * Math.cos(angle), 0, S.radius * Math.sin(angle)];
+    vel = [-Math.sin(angle) * S.speed, 0, Math.cos(angle) * S.speed];
+  } else {
+    cutT += dt;
+    pos = [cutPos[0] + cutVel[0] * cutT, 0, cutPos[2] + cutVel[2] * cutT];
+    vel = cutVel;
+    if (Math.abs(pos[0]) > 12 || Math.abs(pos[2]) > 12) resetSim();
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -10; g <= 10.01; g += 2) {
+    eng.line([[g, -1.5, -10], [g, -1.5, 10]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-10, -1.5, g], [10, -1.5, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  // center pole
+  eng.box([0, -0.75, 0], 0.18, 0.75, 0.18, '#475569', { stroke: INK, strokeWidth: 2 });
+
+  // dashed circle path
+  if (!S.cut) {
+    const circPts = [];
+    for (let i = 0; i <= 64; i++) { const a = i / 64 * Math.PI * 2; circPts.push([S.radius * Math.cos(a), 0, S.radius * Math.sin(a)]); }
+    eng.line(circPts, { color: STRING_COL, width: 2, dash: [4, 6] });
+    eng.line([[0, 0, 0], pos], { color: INK, width: 3 });
+  }
+
+  eng.sphere(pos, 0.32, '#2563eb', { stroke: INK, strokeWidth: 2 });
+
+  if (S.showV) {
+    const vlen = v3.len(vel);
+    if (vlen > 0.01) {
+      const vhat = v3.mul(vel, 1 / vlen);
+      eng.arrow(v3.add(pos, v3.mul(vhat, 0.35)), v3.add(pos, v3.mul(vhat, 0.35 + vlen * 0.4)), { color: VEL_COL, width: 4, label: S.labels ? 'v' : '' });
+    }
+  }
+  if (S.showTension && !S.cut) {
+    const inward = v3.norm(v3.sub([0, 0, 0], pos));
+    eng.arrow(v3.add(pos, v3.mul(inward, 0.35)), v3.add(pos, v3.mul(inward, 0.35 + 1.4)), { color: TENSION_COL, width: 5, label: S.labels ? 'F꜀' : '' });
+  }
+
+  eng.flush(ctx);
+
+  const Fc = S.mass * S.speed * S.speed / S.radius;
+  const ac = S.speed * S.speed / S.radius;
+  const T = 2 * Math.PI * S.radius / S.speed;
+  roFc.set(Fc.toFixed(2) + ' N');
+  roAc.set(ac.toFixed(2) + ' m/s²');
+  roT.set(T.toFixed(2) + ' s');
+  foot.set(S.cut
+    ? "The string tension was the <b>only</b> thing bending the path — cut it and the ball flies off in a <b>straight line</b> (tangent to the circle), <i>not</i> outward along the radius."
+    : "<b>F꜀ = mv²/r</b> points <i>inward</i>, toward the centre — it doesn't speed the ball up, it just keeps changing its <i>direction</i>.");
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

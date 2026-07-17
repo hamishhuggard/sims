@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Momentum & Collisions — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', BLOCK_A = '#2563eb', BLOCK_B = '#f59e0b', V_COL = '#16a34a';
+
+const S = {
+  mode: 'elastic',
+  massA: 2, massB: 2, vA0: 3, vB0: -2,
+  showV: true, labels: true,
+  running: false, collided: false
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Momentum & Collisions', subtitle: 'Conservation of momentum, elastic vs inelastic — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('Collision type');
+ui.segment(gm, null, [
+  { value: 'elastic', label: 'Elastic' },
+  { value: 'inelastic', label: 'Inelastic (sticky)' }
+], 'elastic', v => { S.mode = v; resetSim(); });
+
+const gc = ui.group('Cart A (blue)');
+ui.slider(gc, 'Mass', { min: 0.5, max: 5, step: 0.5, value: 2, fmt: v => v.toFixed(1) + ' kg' }, v => { S.massA = v; resetSim(); });
+ui.slider(gc, 'Initial velocity', { min: -5, max: 5, step: 0.5, value: 3, fmt: v => v.toFixed(1) + ' m/s' }, v => { S.vA0 = v; resetSim(); });
+
+const gd = ui.group('Cart B (orange)');
+ui.slider(gd, 'Mass', { min: 0.5, max: 5, step: 0.5, value: 2, fmt: v => v.toFixed(1) + ' kg' }, v => { S.massB = v; resetSim(); });
+ui.slider(gd, 'Initial velocity', { min: -5, max: 5, step: 0.5, value: -2, fmt: v => v.toFixed(1) + ' m/s' }, v => { S.vB0 = v; resetSim(); });
+
+ui.buttons(gd, [{ label: '▶ Run', onClick: () => { S.running = true; }, primary: true }, { label: '⟲ Reset', onClick: () => resetSim() }]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Velocity arrows', true, v => S.showV = v, { swatch: V_COL });
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roBefore = ui.readout(gr, 'Before collision', '');
+const roAfter = ui.readout(gr, 'After collision', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 18, yaw: 0.5, pitch: 0.3 });
+
+const HW = 0.5; // half-width of each cart
+let xA, xB, vA, vB, p0, KE0, p1, KE1, mergedHW;
+
+function resetSim() {
+  xA = -6; xB = 6; vA = S.vA0; vB = S.vB0;
+  S.running = false; S.collided = false;
+  p0 = S.massA * vA + S.massB * vB;
+  KE0 = 0.5 * S.massA * vA * vA + 0.5 * S.massB * vB * vB;
+  p1 = null; KE1 = null;
+  mergedHW = HW;
+}
+resetSim();
+
+function hwFor(mass) { return HW * Math.cbrt(mass); }
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  if (S.running) {
+    const hwA = hwFor(S.massA), hwB = hwFor(S.massB);
+    xA += vA * dt; xB += vB * dt;
+    if (!S.collided && xB - xA <= hwA + hwB) {
+      // resolve collision
+      if (S.mode === 'elastic') {
+        const m1 = S.massA, m2 = S.massB, u1 = vA, u2 = vB;
+        vA = ((m1 - m2) * u1 + 2 * m2 * u2) / (m1 + m2);
+        vB = ((m2 - m1) * u2 + 2 * m1 * u1) / (m1 + m2);
+      } else {
+        const vCombined = (S.massA * vA + S.massB * vB) / (S.massA + S.massB);
+        vA = vCombined; vB = vCombined;
+      }
+      S.collided = true;
+      p1 = S.massA * vA + S.massB * vB;
+      KE1 = 0.5 * S.massA * vA * vA + 0.5 * S.massB * vB * vB;
+    }
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -8; g <= 8.01; g += 2) {
+    eng.line([[g, -1.2, -3], [g, -1.2, 3]], { color: '#eef2f7', width: 1.5 });
+  }
+  eng.line([[-8, -1.2, -1.2], [8, -1.2, -1.2]], { color: '#eef2f7', width: 2 });
+  eng.line([[-8, -1.2, 1.2], [8, -1.2, 1.2]], { color: '#eef2f7', width: 2 });
+
+  const hwA = hwFor(S.massA), hwB = hwFor(S.massB);
+  eng.box([xA, -0.6, 0], hwA, 0.6, 0.6, BLOCK_A, { stroke: INK, strokeWidth: 2 });
+  eng.box([xB, -0.6, 0], hwB, 0.6, 0.6, BLOCK_B, { stroke: INK, strokeWidth: 2 });
+
+  if (S.labels) {
+    eng.label([xA, 0.4, 0], S.massA.toFixed(1) + ' kg', { color: BLOCK_A, size: 14, lift: 2 });
+    eng.label([xB, 0.4, 0], S.massB.toFixed(1) + ' kg', { color: BLOCK_B, size: 14, lift: 2 });
+  }
+  if (S.showV) {
+    if (Math.abs(vA) > 0.05) eng.arrow([xA, -0.6, 0], [xA + Math.sign(vA) * Math.min(Math.abs(vA), 4) * 0.5, -0.6, 0], { color: V_COL, width: 4 });
+    if (Math.abs(vB) > 0.05) eng.arrow([xB, -0.6, 0], [xB + Math.sign(vB) * Math.min(Math.abs(vB), 4) * 0.5, -0.6, 0], { color: V_COL, width: 4 });
+  }
+
+  eng.flush(ctx);
+
+  roBefore.set('p₀ = ' + p0.toFixed(2) + ' kg·m/s, KE₀ = ' + KE0.toFixed(2) + ' J');
+  roAfter.set(S.collided ? ('p₁ = ' + p1.toFixed(2) + ' kg·m/s, KE₁ = ' + KE1.toFixed(2) + ' J') : '— not yet collided —');
+  foot.set(S.mode === 'elastic'
+    ? '<b>Elastic collision:</b> both momentum <i>and</i> kinetic energy are conserved — carts bounce apart.'
+    : '<b>Inelastic (sticky) collision:</b> momentum is still conserved, but kinetic energy is <b>lost</b> (to heat/sound/deformation) as the carts stick together.');
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

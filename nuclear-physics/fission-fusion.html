@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nuclear Fission &amp; Fusion — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const U_COL = '#a855f7', NEUTRON_COL = '#94a3b8', ENERGY_COL = '#f59e0b';
+const D_COL = '#2563eb', T_COL = '#16a34a', HE_COL = '#e63946';
+
+const S = {
+  mode: 'fission',
+  chainReaction: true,
+  labels: true, showEnergyBar: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Nuclear Fission & Fusion', subtitle: 'Splitting vs joining nuclei — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('Process');
+ui.segment(gm, null, [
+  { value: 'fission', label: 'Fission (split)' },
+  { value: 'fusion', label: 'Fusion (join)' }
+], 'fission', v => { S.mode = v; resetScene(); });
+
+const gf = ui.group('Fission');
+ui.toggle(gf, 'Chain reaction', true, v => S.chainReaction = v);
+ui.buttons(gf, [{ label: '⚛ Fire neutron at U-235', primary: true, onClick: fireNeutron }]);
+
+const gu = ui.group('Fusion');
+ui.buttons(gu, [{ label: '☀ Force D + T together', primary: true, onClick: forceFusion }]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+ui.toggle(gv, 'Energy released bar', true, v => S.showEnergyBar = v);
+
+const gr = ui.group('Readings');
+const roEvents = ui.readout(gr, 'Reactions so far', '0');
+const roNeutrons = ui.readout(gr, 'Free neutrons', '0');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 13, yaw: 0.5, pitch: 0.3 });
+
+let uraniumNuclei = [], freeNeutrons = [], fragments = [], flashes = [];
+let reactionCount = 0, energyBarLevel = 0;
+
+function resetScene() {
+  uraniumNuclei = []; freeNeutrons = []; fragments = []; flashes = [];
+  reactionCount = 0; energyBarLevel = 0;
+  if (S.mode === 'fission') {
+    const positions = [[0, 0, 0], [2.6, 0.3, -1.8], [-2.4, -0.2, -2.2], [2.2, 0.1, 2.4], [-2.6, 0.2, 2.0], [0.2, -0.3, -3.4], [3.4, 0, 0.4]];
+    for (const p of positions) uraniumNuclei.push({ x: p[0], y: p[1], z: p[2], alive: true });
+  } else {
+    fragments = [
+      { type: 'D', x: -2.2, y: 0, z: 0, vx: 0.55, vy: 0, vz: 0 },
+      { type: 'T', x: 2.2, y: 0, z: 0, vx: -0.55, vy: 0, vz: 0 }
+    ];
+  }
+}
+resetScene();
+
+function fireNeutron() {
+  if (S.mode !== 'fission' || !uraniumNuclei.length) return;
+  const target = uraniumNuclei.find(u => u.alive);
+  if (!target) return;
+  const start = [-7, 1, 0];
+  const dir = v3.norm(v3.sub([target.x, target.y, target.z], start));
+  const v = v3.mul(dir, 3.5);
+  freeNeutrons.push({ x: start[0], y: start[1], z: start[2], vx: v[0], vy: v[1], vz: v[2], targetHint: target });
+}
+
+function splitNucleus(u) {
+  u.alive = false;
+  reactionCount++;
+  energyBarLevel = Math.min(1, energyBarLevel + 0.12);
+  flashes.push({ x: u.x, y: u.y, z: u.z, life: 0.4, maxLife: 0.4 });
+  // two fragment nuclei flying apart
+  const a = Math.random() * Math.PI * 2;
+  fragments.push({ type: 'frag', x: u.x, y: u.y, z: u.z, vx: Math.cos(a) * 1.4, vy: 0.2, vz: Math.sin(a) * 1.4, life: 1.6, col: '#fb923c' });
+  fragments.push({ type: 'frag', x: u.x, y: u.y, z: u.z, vx: -Math.cos(a) * 1.4, vy: -0.15, vz: -Math.sin(a) * 1.4, life: 1.6, col: '#c084fc' });
+  // 2-3 new free neutrons
+  const nOut = 2 + Math.floor(Math.random() * 2);
+  for (let i = 0; i < nOut; i++) {
+    const na = Math.random() * Math.PI * 2, nz = (Math.random() - 0.5) * 2;
+    freeNeutrons.push({ x: u.x, y: u.y, z: u.z, vx: Math.cos(na) * 2.2, vy: nz * 0.6, vz: Math.sin(na) * 2.2, spawnT: simT });
+  }
+}
+
+let fusionCooldown = 0;
+function forceFusion() {
+  if (S.mode !== 'fusion' || fusionCooldown > 0) return;
+  const d = fragments.find(f => f.type === 'D'), t = fragments.find(f => f.type === 'T');
+  if (!d || !t) return;
+  d.vx = 1.8; t.vx = -1.8;
+  fusionCooldown = 2;
+}
+
+let simT = 0, lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t; simT += dt;
+  if (fusionCooldown > 0) fusionCooldown -= dt;
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (let g = -5; g <= 5.01; g += 2.5) {
+    eng.line([[g, -2.6, -5], [g, -2.6, 5]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-5, -2.6, g], [5, -2.6, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  if (S.mode === 'fission') {
+    for (const u of uraniumNuclei) {
+      if (!u.alive) continue;
+      eng.sphere([u.x, u.y, u.z], 0.55, U_COL, { stroke: INK, strokeWidth: 2, label: S.labels ? 'U' : '' });
+    }
+    for (let i = freeNeutrons.length - 1; i >= 0; i--) {
+      const nn = freeNeutrons[i];
+      nn.x += nn.vx * dt; nn.y += nn.vy * dt; nn.z += nn.vz * dt;
+      let hit = null;
+      for (const u of uraniumNuclei) {
+        if (!u.alive) continue;
+        if (Math.hypot(nn.x - u.x, nn.y - u.y, nn.z - u.z) < 0.65) { hit = u; break; }
+      }
+      if (hit && (S.chainReaction || nn.targetHint)) { splitNucleus(hit); freeNeutrons.splice(i, 1); continue; }
+      eng.sphere([nn.x, nn.y, nn.z], 0.13, NEUTRON_COL);
+      if (Math.abs(nn.x) > 8 || Math.abs(nn.y) > 6 || Math.abs(nn.z) > 6) freeNeutrons.splice(i, 1);
+    }
+    for (let i = fragments.length - 1; i >= 0; i--) {
+      const f = fragments[i];
+      f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt; f.life -= dt;
+      eng.sphere([f.x, f.y, f.z], 0.4, f.col);
+      if (f.life <= 0) fragments.splice(i, 1);
+    }
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      const fl = flashes[i]; fl.life -= dt;
+      const a = Math.max(0, fl.life / fl.maxLife);
+      eng.sphere([fl.x, fl.y, fl.z], 0.6 + (1 - a) * 1.2, 'rgba(250,204,21,' + (a * 0.5).toFixed(2) + ')', { highlight: 'rgba(254,240,138,0.6)' });
+      if (fl.life <= 0) flashes.splice(i, 1);
+    }
+    if (S.labels && uraniumNuclei.some(u => u.alive)) eng.label([0, -3.1, 0], 'U-235 nuclei (a slice of the fuel)', { color: '#475569', size: 14, lift: 2 });
+  } else {
+    const d = fragments.find(f => f.type === 'D'), tt = fragments.find(f => f.type === 'T');
+    if (d && tt) {
+      d.x += d.vx * dt; tt.x += tt.vx * dt;
+      const dist = Math.abs(d.x - tt.x);
+      if (dist < 0.9 && Math.abs(d.vx) > 0.1) {
+        // fuse!
+        reactionCount++;
+        energyBarLevel = Math.min(1, energyBarLevel + 0.35);
+        flashes.push({ x: (d.x + tt.x) / 2, y: 0, z: 0, life: 0.5, maxLife: 0.5 });
+        fragments = fragments.filter(f => f.type !== 'D' && f.type !== 'T');
+        fragments.push({ type: 'He', x: 0, y: 0, z: 0, vx: 0.3, vy: 0.1, vz: 0, life: 3, col: HE_COL });
+        freeNeutrons.push({ x: 0, y: -0.1, z: 0, vx: -2.5, vy: 0, vz: 0.4 });
+        setTimeout(resetScene, 1400);
+      }
+      if (d) eng.sphere([d.x, d.y, d.z], 0.4, D_COL, { stroke: INK, strokeWidth: 1.5, label: S.labels ? 'D' : '' });
+      if (tt) eng.sphere([tt.x, tt.y, tt.z], 0.4, T_COL, { stroke: INK, strokeWidth: 1.5, label: S.labels ? 'T' : '' });
+    }
+    for (const f of fragments) {
+      if (f.type === 'He') {
+        f.x += f.vx * dt; f.y += f.vy * dt;
+        eng.sphere([f.x, f.y, f.z], 0.42, f.col, { stroke: INK, strokeWidth: 1.5, label: S.labels ? 'He' : '' });
+      }
+    }
+    for (let i = freeNeutrons.length - 1; i >= 0; i--) {
+      const nn = freeNeutrons[i];
+      nn.x += nn.vx * dt; nn.z += nn.vz * dt;
+      eng.sphere([nn.x, nn.y, nn.z], 0.16, NEUTRON_COL);
+      if (Math.abs(nn.x) > 8) freeNeutrons.splice(i, 1);
+    }
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      const fl = flashes[i]; fl.life -= dt;
+      const a = Math.max(0, fl.life / fl.maxLife);
+      eng.sphere([fl.x, fl.y, fl.z], 0.5 + (1 - a) * 1.6, 'rgba(250,204,21,' + (a * 0.55).toFixed(2) + ')', { highlight: 'rgba(254,240,138,0.6)' });
+      if (fl.life <= 0) flashes.splice(i, 1);
+    }
+    if (S.labels) eng.label([0, -1.4, 0], 'push the D and T together — real fusion needs extreme heat & pressure to beat their repulsion', { color: '#475569', size: 14, lift: 2 });
+  }
+
+  energyBarLevel = Math.max(0, energyBarLevel - dt * 0.06);
+
+  eng.flush(ctx);
+  if (S.showEnergyBar) drawEnergyBar();
+
+  roEvents.set(String(reactionCount));
+  roNeutrons.set(String(freeNeutrons.length));
+
+  if (S.mode === 'fission') {
+    foot.set('<b>Fission:</b> a neutron splits a heavy U-235 nucleus into two smaller nuclei + 2&ndash;3 free neutrons + energy. ' +
+      (S.chainReaction ? 'Those neutrons can split <b>more</b> nuclei &mdash; a chain reaction.' : 'Chain reaction off: extra neutrons just fly past.'));
+  } else {
+    foot.set('<b>Fusion:</b> deuterium (D) + tritium (T) &rarr; helium + a neutron + <b>far more energy per reaction than fission</b> &mdash; ' +
+      'this is what powers the Sun, and what fusion reactors are trying to harness on Earth.');
+  }
+
+  requestAnimationFrame(frame);
+}
+
+function drawEnergyBar() {
+  const bw = 46, bh = 200, bx = 50, by = H() - bh - 150;
+  ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(bx - 10, by - 34, bw + 20, bh + 44, 10); else ctx.rect(bx - 10, by - 34, bw + 20, bh + 44);
+  ctx.fill(); ctx.stroke();
+  Draw.label(ctx, 'Energy', bx + bw / 2, by - 18, { size: 13, color: '#475569' });
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2; ctx.strokeRect(bx, by, bw, bh);
+  const fillH = bh * energyBarLevel;
+  ctx.fillStyle = ENERGY_COL;
+  ctx.fillRect(bx, by + bh - fillH, bw, fillH);
+  ctx.strokeStyle = INK; ctx.lineWidth = 2.5; ctx.strokeRect(bx, by, bw, bh);
+}
+
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
