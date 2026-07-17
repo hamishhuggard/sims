@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Solar System — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', SUN_COL = '#fbbf24', BELT_COL = '#94a3b8';
+
+/* Two independent scales:
+   - classroomDist / classroomRadius: hand-tuned, exaggerated, order-preserving
+     numbers chosen so every planet is comfortably visible at once.
+   - trueAU / realRadiusKm: real astronomical values, converted with ONE
+     consistent factor (AU_UNIT) for both distance and size — which is the
+     whole point: at a scale where you can actually see the distances, every
+     planet (and the Sun) shrinks to a sub-pixel dot. */
+const PLANETS = [
+  { name: 'Mercury', classroomDist: 4,  trueAU: 0.39, realRadiusKm: 2440,  classroomRadius: 0.22, color: '#9ca3af' },
+  { name: 'Venus',   classroomDist: 5.5, trueAU: 0.72, realRadiusKm: 6052,  classroomRadius: 0.34, color: '#e3c08d' },
+  { name: 'Earth',   classroomDist: 7,   trueAU: 1.00, realRadiusKm: 6371,  classroomRadius: 0.36, color: '#3b82f6' },
+  { name: 'Mars',    classroomDist: 9,   trueAU: 1.52, realRadiusKm: 3390,  classroomRadius: 0.28, color: '#c1440e' },
+  { name: 'Jupiter', classroomDist: 13,  trueAU: 5.20, realRadiusKm: 69911, classroomRadius: 0.95, color: '#d9a066' },
+  { name: 'Saturn',  classroomDist: 17,  trueAU: 9.58, realRadiusKm: 58232, classroomRadius: 0.85, color: '#e3c16f', ring: true },
+  { name: 'Uranus',  classroomDist: 21,  trueAU: 19.2, realRadiusKm: 25362, classroomRadius: 0.60, color: '#7dd3fc' },
+  { name: 'Neptune', classroomDist: 25,  trueAU: 30.1, realRadiusKm: 24622, classroomRadius: 0.56, color: '#3454a8' }
+];
+const SUN = { realRadiusKm: 696000, classroomRadius: 1.3 };
+const AU_UNIT = 2;                       // "true" units per AU
+const KM_PER_UNIT_TRUE = 149600000 / AU_UNIT;
+
+const EARTH_PERIOD_S = 8; // sim-seconds for one Earth orbit at speed = 1
+
+const S = {
+  scale: 'classroom',   // 'classroom' | 'true'
+  speed: 1,
+  running: true,
+  showOrbits: true, showLabels: true, showBelt: true
+};
+
+const angle = PLANETS.map((p, i) => i * 0.7); // stagger starting positions
+
+const ui = SimUI({ back: '../index.html', title: 'The Solar System', subtitle: 'Scale, order, and orbits — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('Scale');
+ui.segment(gm, null, [
+  { value: 'classroom', label: 'Classroom scale' },
+  { value: 'true', label: 'True distances' }
+], 'classroom', v => { S.scale = v; eng.cam.dist = v === 'true' ? 70 : 32; });
+
+const gt = ui.group('Time');
+ui.slider(gt, 'Time speed', { min: 0, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.speed = v);
+ui.buttons(gt, [
+  { label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }
+]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Orbit paths', true, v => S.showOrbits = v);
+ui.toggle(gs, 'Planet labels', true, v => S.showLabels = v);
+ui.toggle(gs, 'Asteroid belt', true, v => S.showBelt = v, { swatch: BELT_COL });
+
+const gr = ui.group('Readings');
+const roRate = ui.readout(gr, 'Simulated speed', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 32, yaw: 0.55, pitch: 0.42 });
+
+/* asteroid belt: fixed random ring between Mars and Jupiter, in *classroom*
+   proportion (also stretched proportionally in true mode) */
+const belt = [];
+(function seedBelt() {
+  let seed = 42;
+  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  for (let i = 0; i < 90; i++) belt.push({ a: rand() * Math.PI * 2, jitter: 0.85 + rand() * 0.3, y: (rand() - 0.5) * 0.25 });
+})();
+
+function distFor(p) { return S.scale === 'true' ? p.trueAU * AU_UNIT : p.classroomDist; }
+function radiusFor(p) { return S.scale === 'true' ? p.realRadiusKm / KM_PER_UNIT_TRUE : p.classroomRadius; }
+function sunRadius() { return S.scale === 'true' ? SUN.realRadiusKm / KM_PER_UNIT_TRUE : SUN.classroomRadius; }
+function periodFor(p) {
+  const dEarth = distFor(PLANETS[2]);
+  return EARTH_PERIOD_S * Math.pow(distFor(p) / dEarth, 1.5);
+}
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+
+  if (S.running) {
+    PLANETS.forEach((p, i) => { angle[i] += (2 * Math.PI / periodFor(p)) * S.speed * dt; });
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  // Sun with a soft glow
+  const sr = sunRadius();
+  eng.sphere([0, 0, 0], sr * 1.7, 'rgba(251,191,36,0.18)', { highlight: 'rgba(251,191,36,0)' });
+  eng.sphere([0, 0, 0], Math.max(sr, 0.05), SUN_COL, { stroke: '#d97706', strokeWidth: 2 });
+  if (S.showLabels) eng.label([0, sr + 0.8, 0], 'Sun', { color: '#b45309', size: 20, lift: 2 });
+
+  // asteroid belt
+  if (S.showBelt) {
+    const rMars = distFor(PLANETS[3]), rJup = distFor(PLANETS[4]);
+    const rBelt = (rMars + rJup) / 2;
+    const spread = (rJup - rMars) * 0.28;
+    for (const b of belt) {
+      const r = rBelt + (b.jitter - 1) * spread * 3;
+      eng.sphere([r * Math.cos(b.a), b.y * 0.4, r * Math.sin(b.a)], 0.045, BELT_COL, {});
+    }
+  }
+
+  PLANETS.forEach((p, i) => {
+    const d = distFor(p), r = radiusFor(p);
+    if (S.showOrbits) {
+      const pts = [];
+      for (let j = 0; j <= 64; j++) { const a = (j / 64) * Math.PI * 2; pts.push([d * Math.cos(a), 0, d * Math.sin(a)]); }
+      eng.line(pts, { color: '#e2e8f0', width: 1.5 });
+    }
+    const pos = [d * Math.cos(angle[i]), 0, d * Math.sin(angle[i])];
+    eng.sphere(pos, Math.max(r, 0.04), p.color, { stroke: INK, strokeWidth: 1.2 });
+    if (p.ring) {
+      const rr = Math.max(r, 0.04);
+      for (const mul of [1.5, 1.75, 2.0]) {
+        const ring = [];
+        for (let j = 0; j <= 40; j++) {
+          const a = (j / 40) * Math.PI * 2;
+          ring.push(v3.add(pos, [rr * mul * Math.cos(a), rr * mul * 0.28 * Math.sin(a) * 0.35, rr * mul * Math.sin(a) * 0.9]));
+        }
+        eng.line(ring, { color: 'rgba(201,168,106,0.55)', width: 2 });
+      }
+    }
+    if (S.showLabels) eng.label(pos, p.name, { color: '#334155', size: 14, dy: -1, lift: r + 0.3 });
+  });
+
+  eng.flush(ctx);
+
+  const daysPerSec = (365 / EARTH_PERIOD_S) * S.speed;
+  roRate.set(daysPerSec >= 1 ? daysPerSec.toFixed(0) + ' Earth days / real second' : (daysPerSec * 24).toFixed(1) + ' Earth hours / real second');
+  foot.set(S.scale === 'classroom'
+    ? '<b>Classroom scale:</b> sizes and distances are both exaggerated so every planet is visible — the real Solar System is far emptier than this.'
+    : '<b>True distances:</b> at a scale where the distances are real, every planet — and the Sun — shrinks to <b>smaller than a pixel</b>. You can never see true sizes and true distances at once.');
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

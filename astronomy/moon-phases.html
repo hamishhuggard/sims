@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phases of the Moon — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', SUN_COL = '#fbbf24', EARTH_COL = '#2563eb', MOON_COL = '#9ca3af', RAY_COL = '#f59e0b';
+
+const S = {
+  theta: 0.001,          // orbital angle, radians. 0 = new moon, PI = full moon
+  running: true,
+  speed: 0.5,            // rad/s
+  showRays: true,
+  showLabels: true,
+  showInset: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Phases of the Moon', subtitle: 'Why the Moon seems to change shape — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('Moon’s orbit');
+const posSlider = ui.slider(gm, 'Position in orbit', { min: 0, max: 360, step: 1, value: 0.1, fmt: v => v.toFixed(0) + '°' }, v => { S.theta = v * Math.PI / 180; });
+ui.slider(gm, 'Orbit speed', { min: 0, max: 2, step: 0.05, value: 0.5, fmt: v => v.toFixed(2) + ' rad/s' }, v => S.speed = v);
+ui.buttons(gm, [
+  { label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }
+]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Sunlight rays', true, v => S.showRays = v, { swatch: RAY_COL });
+ui.toggle(gs, 'Phase name label', true, v => S.showLabels = v);
+ui.toggle(gs, 'Phase view inset', true, v => S.showInset = v);
+
+const gr = ui.group('Readings');
+const roPhase = ui.readout(gr, 'Current phase', 'New Moon');
+const roIllum = ui.readout(gr, 'Illuminated fraction', '0%');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 24, yaw: 0.5, pitch: 0.35 });
+
+const ORBIT_R = 5.5;
+const SUN_DIST = 22;
+const sHat = [1, 0, 0]; // direction from Earth toward the Sun (Sun sits far along +x)
+const sunPos = v3.mul(sHat, SUN_DIST);
+
+function phaseInfo(theta) {
+  // theta: 0 = new (moon on sun side of Earth), PI = full (moon on far side)
+  const k = (1 - Math.cos(theta)) / 2;          // illuminated fraction visible from Earth
+  const waxing = Math.sin(theta) > 0;            // growing (0..PI) vs shrinking (PI..2PI)
+  let name;
+  if (k < 0.02) name = 'New Moon';
+  else if (k > 0.98) name = 'Full Moon';
+  else if (Math.abs(k - 0.5) < 0.02) name = waxing ? 'First Quarter' : 'Last Quarter';
+  else if (k < 0.5) name = waxing ? 'Waxing Crescent' : 'Waning Crescent';
+  else name = waxing ? 'Waxing Gibbous' : 'Waning Gibbous';
+  return { k, waxing, name };
+}
+
+function drawPhaseInset(theta) {
+  const r = 60;
+  const cx = 20 + r + 4, cy = H() - r - 60;
+  const { k, waxing, name } = phaseInfo(theta);
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 3;
+  const pad = 16;
+  ctx.beginPath();
+  const bx = cx - r - pad, by = cy - r - pad, bw = (r + pad) * 2, bh = (r + pad) * 2 + 34;
+  if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, 14); else ctx.rect(bx, by, bw, bh);
+  ctx.fill(); ctx.stroke();
+
+  // background disk = unlit side
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#334155';
+  ctx.fill();
+
+  // lit region via the classic limb + terminator-ellipse technique
+  const litOnRight = waxing;
+  const rx = r * Math.abs(2 * k - 1); // horizontal radius of the terminator ellipse
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.fillStyle = '#f8fafc';
+  ctx.beginPath();
+  // fixed limb: half-disk on the lit side
+  ctx.moveTo(cx, cy - r);
+  ctx.arc(cx, cy, r, -Math.PI / 2, Math.PI / 2, !litOnRight);
+  // terminator: half-ellipse back to the start, bulge direction flips at k=0.5
+  const bulgeSameSide = k >= 0.5;
+  ctx.ellipse(cx, cy, rx, r, 0, Math.PI / 2, -Math.PI / 2, litOnRight === bulgeSameSide);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.stroke();
+
+  Draw.label(ctx, 'as seen from Earth', cx, cy + r + 18, { size: 14, color: '#475569' });
+  Draw.label(ctx, name, cx, cy + r + 36, { size: 16, color: INK, weight: 800 });
+  ctx.restore();
+}
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+
+  if (S.running) {
+    S.theta = (S.theta + S.speed * dt) % (Math.PI * 2);
+    posSlider.set((S.theta * 180 / Math.PI + 360) % 360);
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  // faint floor grid
+  const G = 9;
+  for (let g = -G; g <= G + 0.01; g += 2) {
+    eng.line([[g, -3, -G], [g, -3, G]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-G, -3, g], [G, -3, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  // Sun (direction indicator, drawn at a fixed comfortable distance so it stays on screen)
+  const sunDraw = v3.mul(sHat, 9);
+  eng.sphere(sunDraw, 0.85, SUN_COL, { highlight: '#fff7cc' });
+  if (S.showLabels) eng.label(sunDraw, 'Sun (far away →)', { color: SUN_COL, size: 18, dy: -1.3, lift: 2 });
+  if (S.showRays) {
+    for (const dz of [-1.6, 0, 1.6]) {
+      for (const dy of [-1.6, 0, 1.6]) {
+        eng.arrow(v3.add(sunDraw, [-1, dy, dz]), [ -3.4, dy, dz], { color: RAY_COL, width: 2.5 });
+      }
+    }
+  }
+
+  // Earth at origin
+  eng.sphere([0, 0, 0], 1.1, EARTH_COL, { stroke: INK, strokeWidth: 2, label: S.showLabels ? '' : '' });
+  if (S.showLabels) eng.label([0, 1.5, 0], 'Earth', { color: EARTH_COL, size: 18, lift: 2 });
+
+  // Moon orbit ring
+  const ring = [];
+  for (let i = 0; i <= 64; i++) {
+    const a = (i / 64) * Math.PI * 2;
+    ring.push([ORBIT_R * Math.cos(a), 0, ORBIT_R * Math.sin(a)]);
+  }
+  eng.line(ring, { color: '#cbd5e1', width: 2 });
+
+  // Moon position: theta=0 => same side as Sun (new), theta=PI => far side (full)
+  const moonPos = [ORBIT_R * Math.cos(S.theta), 0, ORBIT_R * Math.sin(S.theta)];
+  eng.sphere(moonPos, 0.5, MOON_COL, { stroke: INK, strokeWidth: 2 });
+  const { k, name } = phaseInfo(S.theta);
+  if (S.showLabels) eng.label(moonPos, name, { color: '#475569', size: 15, dy: 1.4, lift: 2 });
+  if (S.showRays) {
+    eng.arrow(v3.add(moonPos, v3.mul(sHat, 1.6)), v3.add(moonPos, v3.mul(sHat, 0.6)), { color: RAY_COL, width: 2.5 });
+  }
+
+  eng.flush(ctx);
+
+  if (S.showInset) drawPhaseInset(S.theta);
+
+  roPhase.set(name);
+  roIllum.set(Math.round(k * 100) + '%');
+  foot.set('The Moon’s phase comes from the changing <b>Sun–Moon–Earth angle</b> as it orbits — ' +
+    'not from Earth’s shadow (that’s a rare <i>eclipse</i>, see the eclipses sim). Half the Moon is always lit by the Sun; ' +
+    'we just see different amounts of that lit half from Earth.');
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

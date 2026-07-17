@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stellar Evolution &amp; the H-R Diagram — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+
+function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function hexToRgb(h) {
+  const m = h.replace('#', '');
+  return [parseInt(m.slice(0, 2), 16), parseInt(m.slice(2, 4), 16), parseInt(m.slice(4, 6), 16)];
+}
+function rgbToHex(r, g, b) {
+  return '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+}
+function lerpColor(a, b, t) {
+  const [r1, g1, b1] = hexToRgb(a), [r2, g2, b2] = hexToRgb(b);
+  return rgbToHex(lerp(r1, r2, t), lerp(g1, g2, t), lerp(b1, b2, t));
+}
+/* temperature 0 (cool) .. 1 (hot) -> a plausible star color */
+function colorForTemp(t) {
+  const stops = ['#dc2626', '#f97316', '#fde047', '#e0f2fe', '#93c5fd'];
+  const n = stops.length - 1;
+  const seg = clamp01(t) * n;
+  const i = Math.min(n - 1, Math.floor(seg));
+  return lerpColor(stops[i], stops[i + 1], seg - i);
+}
+
+/* ---------- stage tracks, built from a mass in solar masses ---------- */
+function stagesForMass(M) {
+  const highMass = M >= 8;
+  const massT = clamp01((M - 0.5) / (25 - 0.5));
+  const msTemp = lerp(0.12, 0.95, massT);
+  const msLum = lerp(0.06, 0.95, Math.pow(massT, 0.7));
+  const msColor = colorForTemp(msTemp);
+  const msRadius = lerp(0.55, 1.5, Math.sqrt(massT));
+  const msDuration = highMass
+    ? '~a few million years (massive stars burn through fuel fast)'
+    : (M < 1 ? '~50-100 billion years — longer than the current age of the universe' : '~10 billion years for a Sun-like star');
+
+  const stages = [
+    { name: 'Protostar', duration: '~100,000 years — still collapsing and heating up', radius: msRadius * 1.15, color: '#f97316', hrX: msTemp * 0.55, hrY: msLum * 0.45 },
+    { name: 'Main Sequence', duration: msDuration + ' — by far the longest stage of any star’s life', radius: msRadius, color: msColor, hrX: msTemp, hrY: msLum }
+  ];
+
+  if (!highMass) {
+    stages.push({ name: 'Red Giant', duration: '~1 billion years — outer layers swell and cool', radius: msRadius * 4.2, color: '#dc2626', hrX: 0.16, hrY: 0.82 });
+    stages.push({ name: 'Planetary Nebula', duration: '~10,000 years — outer layers drift away into space', radius: msRadius * 4.2, color: '#f87171', hrX: 0.16, hrY: 0.82, shell: true });
+    stages.push({ name: 'White Dwarf', duration: 'cools for billions of years, essentially forever', radius: msRadius * 0.28, color: '#e0f2fe', hrX: 0.88, hrY: 0.12 });
+  } else {
+    stages.push({ name: 'Red Supergiant', duration: '~a few hundred thousand years', radius: msRadius * 6.5, color: '#b91c1c', hrX: 0.1, hrY: 0.95 });
+    stages.push({ name: 'Supernova', duration: 'a few weeks — briefly outshines its entire host galaxy', radius: msRadius * 8.5, color: '#fef08a', hrX: 0.1, hrY: 1.0, flash: true });
+    if (M >= 20) {
+      stages.push({ name: 'Black Hole', duration: 'forever — not directly visible; this marks where its position would be', radius: msRadius * 0.1, color: '#111827', hrX: 0.5, hrY: 0.02 });
+    } else {
+      stages.push({ name: 'Neutron Star', duration: 'cools slowly while spinning rapidly — a city-sized core denser than an atomic nucleus', radius: msRadius * 0.18, color: '#c7d2fe', hrX: 0.62, hrY: 0.18 });
+    }
+  }
+  return stages;
+}
+
+const S = {
+  mass: 1.0,
+  stages: stagesForMass(1.0),
+  idx: 0,
+  transT: 1,        // 1 = settled on stages[idx]; 0..1 mid-transition to idx+1
+  transDur: 1.3,
+  autoplay: false,
+  autoTimer: 0,
+  showLabels: true,
+  showHR: true,
+  trail: []          // {hrX, hrY} of each stage reached, for the H-R inset
+};
+
+function resetStar() {
+  S.stages = stagesForMass(S.mass);
+  S.idx = 0;
+  S.transT = 1;
+  S.autoTimer = 0;
+  S.trail = [{ hrX: S.stages[0].hrX, hrY: S.stages[0].hrY }];
+}
+resetStar();
+
+function evolve() {
+  if (S.transT < 1) return;            // already mid-transition
+  if (S.idx >= S.stages.length - 1) return; // at terminal stage
+  S.idx++;
+  S.transT = 0;
+  S.trail.push({ hrX: S.stages[S.idx].hrX, hrY: S.stages[S.idx].hrY });
+}
+
+const ui = SimUI({ back: '../index.html', title: 'Stellar Evolution & the H-R Diagram', subtitle: 'Mass decides a star’s lifetime and its fate — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('The star');
+ui.slider(gm, 'Mass', { min: 0.5, max: 25, step: 0.5, value: 1, fmt: v => v.toFixed(1) + ' M☉' }, v => { S.mass = v; resetStar(); });
+ui.buttons(gm, [
+  { label: 'Evolve ▶', onClick: evolve, primary: true },
+  { label: '↺ Reset to protostar', onClick: resetStar }
+]);
+ui.toggle(gm, 'Autoplay', false, v => { S.autoplay = v; S.autoTimer = 0; });
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Labels', true, v => S.showLabels = v);
+ui.toggle(gs, 'H-R diagram inset', true, v => S.showHR = v);
+
+const gr = ui.group('Current stage');
+const roStage = ui.readout(gr, 'Stage', '');
+const roDur = ui.readout(gr, 'Lasts about', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 16, yaw: 0.5, pitch: 0.32 });
+
+let lastT = 0, simT = 0;
+
+function currentVisual() {
+  const cur = S.stages[S.idx];
+  if (S.transT >= 1 || S.idx === 0) return { radius: cur.radius, color: cur.color, hrX: cur.hrX, hrY: cur.hrY, stage: cur, mixT: 1 };
+  const prev = S.stages[S.idx - 1];
+  const e = S.transT * S.transT * (3 - 2 * S.transT); // smoothstep
+  return {
+    radius: lerp(prev.radius, cur.radius, e),
+    color: lerpColor(prev.color, cur.color, e),
+    hrX: lerp(prev.hrX, cur.hrX, e),
+    hrY: lerp(prev.hrY, cur.hrY, e),
+    stage: cur, mixT: e
+  };
+}
+
+function drawHR(v) {
+  const gw = Math.min(360, W() * 0.34), gh = 230;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  const mx = gx + 46, mw = gw - 62, my = gy + 34, mh = gh - 64;
+  Draw.label(ctx, 'H-R Diagram', gx + gw / 2, gy + 18, { size: 15, color: '#475569' });
+  Draw.label(ctx, 'Luminosity →', gx + 16, my - 4, { size: 12, color: '#475569', align: 'left', baseline: 'alphabetic' });
+  Draw.label(ctx, '← hot        Temperature        cool →', mx + mw / 2, gy + gh - 12, { size: 11.5, color: '#475569' });
+
+  // faint main-sequence band: cool/dim (bottom-right) -> hot/bright (top-left)
+  ctx.strokeStyle = 'rgba(37,99,235,0.25)'; ctx.lineWidth = 22;
+  ctx.beginPath();
+  ctx.moveTo(mx + mw * 0.92, my + mh * 0.92);
+  ctx.lineTo(mx + mw * 0.08, my + mh * 0.08);
+  ctx.stroke();
+
+  ctx.font = '700 12px system-ui'; ctx.fillStyle = '#94a3b8';
+  ctx.textAlign = 'center';
+  ctx.fillText('giants', mx + mw * 0.22, my + mh * 0.18);
+  ctx.fillText('main sequence', mx + mw * 0.55, my + mh * 0.55);
+  ctx.fillText('white dwarfs', mx + mw * 0.82, my + mh * 0.86);
+
+  function toXY(hrX, hrY) {
+    return [mx + (1 - hrX) * mw, my + mh - hrY * mh];
+  }
+
+  // trail
+  if (S.trail.length > 1) {
+    ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2.5; ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    S.trail.forEach((p, i) => {
+      const [x, y] = toXY(p.hrX, p.hrY);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    const [cx, cy] = toXY(v.hrX, v.hrY);
+    ctx.lineTo(cx, cy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // current position
+  const [x, y] = toXY(v.hrX, v.hrY);
+  ctx.fillStyle = v.color; ctx.strokeStyle = INK; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+}
+
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+  simT += dt;
+
+  if (S.transT < 1) S.transT = Math.min(1, S.transT + dt / S.transDur);
+
+  if (S.autoplay) {
+    S.autoTimer += dt;
+    if (S.autoTimer > 1.6 && S.transT >= 1 && S.idx < S.stages.length - 1) {
+      S.autoTimer = 0;
+      evolve();
+    }
+  }
+
+  const v = currentVisual();
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  // faint background starfield for context
+  for (let i = 0; i < 40; i++) {
+    const ang = i * 2.399963, r = 13 + (i % 5) * 1.6;
+    const p = [Math.cos(ang) * r, Math.sin(i * 3.1) * r * 0.5, Math.sin(ang) * r];
+    eng.sphere(p, 0.04, '#cbd5e1', {});
+  }
+
+  // planetary-nebula expanding shell
+  if (v.stage.shell) {
+    const age = simT % 6;
+    const shellR = v.radius * (1.1 + age * 0.5);
+    const alpha = Math.max(0, 0.28 - age * 0.045);
+    if (alpha > 0.01) {
+      eng.sphere([0, 0, 0], shellR, 'rgba(96,165,250,' + alpha.toFixed(3) + ')', { highlight: 'rgba(96,165,250,0)' });
+    }
+  }
+
+  // supernova flash
+  if (v.stage.flash) {
+    const pulse = 0.5 + 0.5 * Math.sin(simT * 6);
+    eng.sphere([0, 0, 0], v.radius * (1.3 + pulse * 0.6), 'rgba(254,240,138,' + (0.22 + pulse * 0.18).toFixed(3) + ')', { highlight: 'rgba(254,240,138,0)' });
+    eng.sphere([0, 0, 0], v.radius * (0.7 + pulse * 0.3), 'rgba(254,240,138,' + (0.35 + pulse * 0.25).toFixed(3) + ')', { highlight: 'rgba(255,255,255,0.9)' });
+  }
+
+  // the star itself
+  eng.sphere([0, 0, 0], Math.max(v.radius, 0.08), v.color, { stroke: INK, strokeWidth: 1.5, highlight: lighten(v.color === '#111827' ? '#374151' : v.color, 0.5) });
+  if (S.showLabels) eng.label([0, v.radius + 0.6, 0], v.stage.name, { color: '#334155', size: 20, lift: 1 });
+
+  eng.flush(ctx);
+
+  if (S.showHR) drawHR(v);
+
+  roStage.set(v.stage.name + (S.transT < 1 ? ' (evolving…)' : ''));
+  roDur.set(v.stage.duration);
+
+  const highMass = S.mass >= 8;
+  foot.set('A star’s <b>mass</b> sets both its main-sequence lifetime and its fate: low/mid-mass stars end as a <b>white dwarf</b>, high-mass stars end in a <b>supernova</b> leaving a neutron star or black hole. ' +
+    'Right now: ' + S.mass.toFixed(1) + ' M☉, a ' + (highMass ? 'high-mass' : 'low/mid-mass') + ' star. Every star spends most of its life on the <b>main sequence</b> band of the H-R diagram.');
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

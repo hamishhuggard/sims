@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solar &amp; Lunar Eclipses — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e';
+const SUN_COL = '#fbbf24', EARTH_COL = '#2563eb', MOON_COL = '#9ca3af';
+const UMBRA_COL = '#1a1a2e', PENUMBRA_COL = '#7c3aed';
+const ORBIT_COL = '#cbd5e1';
+
+const SUN_DIR = [1, 0, 0];      // fixed direction from Earth toward the Sun
+const SUN_DIST = 15, SUN_R = 2.2;
+const EARTH_R = 1.15, MOON_R = 0.32;
+const R = 5.2;                  // Moon's orbital radius (toy scale)
+const REAL_TILT = 5.14 * Math.PI / 180;
+
+// eclipse geometry (toy-scale thresholds — see reasoning in comments below)
+const UMBRA_SOLAR = 0.16, PENUMBRA_SOLAR = 0.40;   // Moon's shadow on Earth
+const UMBRA_LUNAR = 0.30, PENUMBRA_LUNAR = 0.42;   // Earth's (bigger) shadow on the Moon
+const SYZYGY_WINDOW = 0.45; // rad of orbital phase either side of new/full moon where the shadow is shown
+
+const S = {
+  mode: 'solar',        // 'solar' | 'lunar'
+  tiltOn: true,
+  nodeOffsetDeg: 30,    // ν — how far this month's new/full moon sits from a lunar node
+  phi: -30 * Math.PI / 180,  // orbital phase (rad); animates
+  speed: 0.4,           // rad/s
+  running: true,
+  showUmbra: true, showPenumbra: true, showOrbit: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Solar &amp; Lunar Eclipses', subtitle: 'Why eclipses are rare — the Moon’s tilted orbit — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('Eclipse type');
+ui.segment(gm, null, [
+  { value: 'solar', label: '☉ Solar eclipse' },
+  { value: 'lunar', label: '☾ Lunar eclipse' }
+], 'solar', v => { S.mode = v; jumpToSyzygy(); });
+
+const gv = ui.group('Orbit');
+ui.toggle(gv, 'Moon orbit tilt (~5.1°, real)', true, v => S.tiltOn = v, { swatch: '#94a3b8' });
+ui.slider(gv, 'Alignment with lunar nodes (this month)', { min: 0, max: 90, step: 1, value: 30, fmt: v => v.toFixed(0) + '°' }, v => S.nodeOffsetDeg = v);
+ui.slider(gv, 'Orbit speed', { min: 0, max: 1.2, step: 0.05, value: 0.4, fmt: v => v.toFixed(2) + ' rad/s' }, v => S.speed = v);
+ui.buttons(gv, [
+  { label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } },
+  { label: '⟲ Jump to this eclipse point', onClick: jumpToSyzygy, primary: true }
+]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Umbra (full shadow)', true, v => S.showUmbra = v, { swatch: UMBRA_COL });
+ui.toggle(gs, 'Penumbra (partial shadow)', true, v => S.showPenumbra = v, { swatch: PENUMBRA_COL });
+ui.toggle(gs, 'Orbit path', true, v => S.showOrbit = v);
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Status');
+const roStatus = ui.readout(gr, 'This alignment', '');
+const roOffset = ui.readout(gr, 'Moon’s distance off the ecliptic', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 16, yaw: 0.55, pitch: 0.3 });
+
+function angleDiff(a, b) {
+  let d = (a - b) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+function nu() { return S.nodeOffsetDeg * Math.PI / 180; }
+function newMoonPhi() { return -nu(); }
+function fullMoonPhi() { return Math.PI - nu(); }
+
+function jumpToSyzygy() {
+  S.phi = S.mode === 'solar' ? newMoonPhi() : fullMoonPhi();
+}
+
+/* moon position: orbit tilted by `tilt` about the node axis, which itself
+   sits at angle ν from the fixed Sun-Earth line (all in the x/z "ecliptic") */
+function moonPosAt(phi, tilt, nodeOffRad) {
+  const nodeAxis = [Math.cos(nodeOffRad), 0, Math.sin(nodeOffRad)];
+  const e2 = [-Math.sin(nodeOffRad), 0, Math.cos(nodeOffRad)];
+  const inPlane = v3.add(v3.mul(nodeAxis, Math.cos(phi)), v3.mul(e2, Math.sin(phi) * Math.cos(tilt)));
+  const out = [0, Math.sin(phi) * Math.sin(tilt), 0];
+  return v3.mul(v3.add(inPlane, out), R);
+}
+
+let lastT = 0;
+
+function drawShadowCone(apex, axisDir, length, r0, r1, color, alpha) {
+  const up = Math.abs(axisDir[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const right = v3.norm(v3.cross(up, axisDir));
+  const upv = v3.cross(axisDir, right);
+  const base = v3.add(apex, v3.mul(axisDir, length));
+  const N = 20;
+  const basePts = [];
+  for (let i = 0; i <= N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    basePts.push(v3.add(base, v3.add(v3.mul(right, Math.cos(a) * r1), v3.mul(upv, Math.sin(a) * r1))));
+  }
+  const apexPts = [];
+  for (let i = 0; i <= N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    apexPts.push(v3.add(apex, v3.add(v3.mul(right, Math.cos(a) * r0), v3.mul(upv, Math.sin(a) * r0))));
+  }
+  eng.line(basePts, { color, width: 2 });
+  for (let i = 0; i < N; i += 3) eng.line([apexPts[i], basePts[i]], { color, width: 1.5 });
+  eng.poly(basePts, color.replace('rgb', 'rgba').replace(')', ',' + (alpha * 0.4).toFixed(2) + ')'), { depthBias: -0.05 });
+}
+
+function hexToRgb(hex) {
+  const m = hex.replace('#', '');
+  return [parseInt(m.slice(0, 2), 16), parseInt(m.slice(2, 4), 16), parseInt(m.slice(4, 6), 16)].join(',');
+}
+const UMBRA_RGB = 'rgb(' + hexToRgb(UMBRA_COL) + ')';
+const PENUMBRA_RGB = 'rgb(' + hexToRgb(PENUMBRA_COL) + ')';
+
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+  if (S.running) S.phi += S.speed * dt;
+
+  const tilt = S.tiltOn ? REAL_TILT : 0;
+  const moonPos = moonPosAt(S.phi, tilt, nu());
+  const perpDist = Math.hypot(moonPos[1], moonPos[2]); // Moon's distance off the Sun-Earth line
+
+  const dNew = angleDiff(S.phi, newMoonPhi());
+  const dFull = angleDiff(S.phi, fullMoonPhi());
+  const nearNew = Math.abs(dNew) < SYZYGY_WINDOW;
+  const nearFull = Math.abs(dFull) < SYZYGY_WINDOW;
+  const proxNew = Math.max(0, 1 - Math.abs(dNew) / SYZYGY_WINDOW);
+  const proxFull = Math.max(0, 1 - Math.abs(dFull) / SYZYGY_WINDOW);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  const sunPos = v3.mul(SUN_DIR, SUN_DIST);
+  eng.sphere(sunPos, SUN_R * 1.7, 'rgba(251,191,36,0.15)', { highlight: 'rgba(251,191,36,0)' });
+  eng.sphere(sunPos, SUN_R, SUN_COL, { stroke: '#d97706', strokeWidth: 2 });
+  if (S.labels) eng.label([sunPos[0], SUN_R + 1.1, sunPos[2]], 'Sun', { color: '#b45309', size: 22, lift: 3 });
+
+  // sunlight ray hint
+  eng.line([sunPos, [0, 0, 0]], { color: 'rgba(251,191,36,0.35)', width: 2, dash: [0.4, 0.3] });
+
+  if (S.showOrbit) {
+    const pts = [];
+    for (let i = 0; i <= 64; i++) pts.push(moonPosAt((i / 64) * Math.PI * 2, tilt, nu()));
+    eng.line(pts, { color: ORBIT_COL, width: 2 });
+  }
+
+  eng.sphere([0, 0, 0], EARTH_R, EARTH_COL, { stroke: INK, strokeWidth: 2 });
+  if (S.labels) eng.label([0, EARTH_R + 0.8, 0], 'Earth', { color: '#1e3a8a', size: 20, lift: 2 });
+
+  eng.sphere(moonPos, MOON_R, MOON_COL, { stroke: INK, strokeWidth: 1.5 });
+  if (S.labels) eng.label(v3.add(moonPos, [0, 0.6, 0]), 'Moon', { color: '#475569', size: 16, lift: 1 });
+
+  // node-axis marker (where the tilted orbit crosses the ecliptic)
+  if (S.labels && tilt > 0.001) {
+    const nodeAxis = [Math.cos(nu()), 0, Math.sin(nu())];
+    eng.line([v3.mul(nodeAxis, -R * 1.05), v3.mul(nodeAxis, R * 1.05)], { color: '#e2e8f0', width: 1.5, dash: [0.2, 0.2] });
+  }
+
+  let status = 'Moon is elsewhere in its orbit — not lined up for an eclipse right now.';
+  if (S.mode === 'solar' && nearNew) {
+    const apex = moonPosAt(newMoonPhi(), tilt, nu());
+    if (S.showUmbra) drawShadowCone(apex, [-1, 0, 0], R, MOON_R * 0.9, UMBRA_SOLAR, UMBRA_RGB, proxNew);
+    if (S.showPenumbra) drawShadowCone(apex, [-1, 0, 0], R, MOON_R * 0.9, PENUMBRA_SOLAR, PENUMBRA_RGB, proxNew);
+    const off = Math.hypot(apex[1], apex[2]);
+    status = off < UMBRA_SOLAR ? 'Total solar eclipse! The Moon’s umbra reaches Earth.'
+      : off < PENUMBRA_SOLAR ? 'Partial solar eclipse — Earth only grazes the penumbra.'
+      : 'Near miss — this new moon, the Moon passes just above or below the Sun’s disc. No eclipse.';
+    roOffset.set(off.toFixed(2) + ' (toy units)');
+  } else if (S.mode === 'lunar' && nearFull) {
+    const apex = [0, 0, 0];
+    if (S.showUmbra) drawShadowCone(apex, [-1, 0, 0], R, EARTH_R * 0.9, UMBRA_LUNAR, UMBRA_RGB, proxFull);
+    if (S.showPenumbra) drawShadowCone(apex, [-1, 0, 0], R, EARTH_R * 0.9, PENUMBRA_LUNAR, PENUMBRA_RGB, proxFull);
+    const mp = moonPosAt(fullMoonPhi(), tilt, nu());
+    const off = Math.hypot(mp[1], mp[2]);
+    status = off < UMBRA_LUNAR ? 'Total lunar eclipse! The Moon passes fully through Earth’s umbra.'
+      : off < PENUMBRA_LUNAR ? 'Partial lunar eclipse — the Moon only grazes Earth’s shadow.'
+      : 'Near miss — this full moon, the Moon passes just above or below Earth’s shadow. No eclipse.';
+    roOffset.set(off.toFixed(2) + ' (toy units)');
+  } else {
+    roOffset.set(perpDist.toFixed(2) + ' (toy units)');
+  }
+  roStatus.set(status);
+
+  eng.flush(ctx);
+
+  foot.set(S.tiltOn
+    ? 'The Moon’s orbit is tilted ~5° to the Earth-Sun plane, so most new/full moons it passes just above or below the Sun/Earth’s shadow — <b>eclipses need the Moon to be both at new/full AND near a node</b>, which only lines up a few times a year.'
+    : '<b>Orbit flattened (no tilt):</b> now every single new moon and full moon lines up exactly — you’d get a solar <i>and</i> lunar eclipse every month. The real ~5° tilt is the only reason that doesn’t happen.');
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

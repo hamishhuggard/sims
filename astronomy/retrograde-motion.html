@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retrograde Motion of Mars — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', SUN_COL = '#fbbf24', EARTH_COL = '#3b82f6', MARS_COL = '#c1440e', STAR_COL = '#cbd5e1';
+
+const R_EARTH = 6, R_MARS = 9.5;
+const EARTH_PERIOD = 8;
+const MARS_PERIOD = EARTH_PERIOD * Math.pow(R_MARS / R_EARTH, 1.5); // Kepler-consistent
+const MARS_INCL = 4 * Math.PI / 180; // exaggerated vs the real ~1.85° so the sky loop reads clearly
+
+const S = {
+  view: 'space',      // 'space' | 'sky'
+  speed: 1, running: true,
+  showTrail: true, showOrbits: true, showLabels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Retrograde Motion of Mars', subtitle: 'Why Mars sometimes seems to move backward — drag to orbit, scroll to zoom' });
+
+const gm = ui.group('View');
+ui.segment(gm, null, [
+  { value: 'space', label: 'Space view' },
+  { value: 'sky', label: 'Sky view (from Earth)' }
+], 'space', v => { S.view = v; });
+
+const gt = ui.group('Time');
+ui.slider(gt, 'Speed', { min: 0, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.speed = v);
+ui.buttons(gt, [
+  { label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }
+]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Apparent path trail', true, v => S.showTrail = v, { swatch: MARS_COL });
+ui.toggle(gs, 'Orbit paths', true, v => S.showOrbits = v);
+ui.toggle(gs, 'Labels', true, v => S.showLabels = v);
+
+const gr = ui.group('Readings');
+const roMotion = ui.readout(gr, 'Mars is currently', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 26, yaw: 0.5, pitch: 0.5 });
+
+/* fixed distant starfield, used as the reference backdrop */
+const stars = [];
+(function seedStars() {
+  let seed = 7;
+  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  for (let i = 0; i < 160; i++) {
+    const u = rand() * 2 - 1, v = rand() * Math.PI * 2, r = 60;
+    const s = Math.sqrt(1 - u * u);
+    stars.push([r * s * Math.cos(v), r * u * 0.6, r * s * Math.sin(v)]);
+  }
+})();
+
+let phiE = 0, phiM = 0.9;
+function earthPos(phi) { return [R_EARTH * Math.cos(phi), 0, R_EARTH * Math.sin(phi)]; }
+function marsPos(phi) {
+  const nodeAxis = [1, 0, 0], e2 = [0, 0, 1];
+  const inPlane = v3.add(v3.mul(nodeAxis, Math.cos(phi)), v3.mul(e2, Math.sin(phi) * Math.cos(MARS_INCL)));
+  const out = [0, Math.sin(phi) * Math.sin(MARS_INCL), 0];
+  return v3.mul(v3.add(inPlane, out), R_MARS);
+}
+
+/* apparent sky coordinates of Mars as seen from Earth: longitude (in the
+   ecliptic plane) + latitude (deviation from it) — plotting these two over
+   time is what actually traces the classic retrograde loop */
+function skyCoords(earthP, marsP) {
+  const d = v3.sub(marsP, earthP);
+  const lon = Math.atan2(d[2], d[0]);
+  const lat = Math.asin(Math.max(-1, Math.min(1, d[1] / v3.len(d))));
+  return { lon, lat };
+}
+
+const trail = [];
+let lastLon = null, lastT = 0, retro = false;
+
+function drawSkyInset() {
+  const gw = Math.min(380, W() * 0.36), gh = 260;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = '#0f172a';
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+  ctx.save();
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.clip();
+
+  Draw.label(ctx, 'Mars against the fixed stars', gx + gw / 2, gy + 16, { size: 13, color: '#cbd5e1' });
+
+  if (trail.length) {
+    const last = trail[trail.length - 1];
+    const cx = gx + gw / 2, cy = gy + gh / 2 + 8;
+    const scale = (Math.min(gw, gh - 30) / 2) / 0.35; // ~0.35 rad window
+    // background stars, parallax-free (fixed relative jitter per star)
+    ctx.fillStyle = '#64748b';
+    for (let i = 0; i < 40; i++) {
+      const sx = cx + ((i * 53) % gw - gw / 2) * 0.9;
+      const sy = gy + 30 + ((i * 97) % (gh - 50));
+      ctx.beginPath(); ctx.arc(sx, sy, 1.4, 0, Math.PI * 2); ctx.fill();
+    }
+    if (S.showTrail && trail.length > 1) {
+      ctx.strokeStyle = MARS_COL; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      trail.forEach((p, i) => {
+        const x = cx + (p.lon - last.lon) * scale, y = cy - (p.lat - last.lat) * scale;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+    ctx.fillStyle = MARS_COL; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.stroke();
+}
+
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+
+  if (S.running) {
+    phiE += (2 * Math.PI / EARTH_PERIOD) * S.speed * dt;
+    phiM += (2 * Math.PI / MARS_PERIOD) * S.speed * dt;
+  }
+
+  const eP = earthPos(phiE), mP = marsPos(phiM);
+  const { lon, lat } = skyCoords(eP, mP);
+  if (lastLon !== null) {
+    let d = lon - lastLon;
+    if (d > Math.PI) d -= 2 * Math.PI;
+    if (d < -Math.PI) d += 2 * Math.PI;
+    retro = d < 0;
+  }
+  lastLon = lon;
+  if (S.running) {
+    trail.push({ lon, lat });
+    if (trail.length > 500) trail.shift();
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  for (const s of stars) eng.sphere(s, 0.18, STAR_COL, {});
+
+  if (S.view === 'sky') {
+    eng.cam.target = eP;
+    eng.cam.dist = Math.max(eng.cam.dist, 4);
+    if (eng.cam.dist > 14) eng.cam.dist = 14;
+  } else {
+    eng.cam.target = [0, 0, 0];
+  }
+
+  eng.sphere([0, 0, 0], 1.1, SUN_COL, { stroke: '#d97706', strokeWidth: 2 });
+  if (S.showLabels) eng.label([0, 1.6, 0], 'Sun', { color: '#b45309', size: 18, lift: 2 });
+
+  if (S.showOrbits) {
+    const eo = [], mo = [];
+    for (let i = 0; i <= 64; i++) { eo.push(earthPos((i / 64) * Math.PI * 2)); mo.push(marsPos((i / 64) * Math.PI * 2)); }
+    eng.line(eo, { color: '#93c5fd', width: 2 });
+    eng.line(mo, { color: '#e8a184', width: 2 });
+  }
+
+  eng.sphere(eP, 0.4, EARTH_COL, { stroke: INK, strokeWidth: 1.5 });
+  if (S.showLabels) eng.label(eP, 'Earth', { color: '#1e3a8a', size: 16, lift: 1 });
+  eng.sphere(mP, 0.32, MARS_COL, { stroke: INK, strokeWidth: 1.5 });
+  if (S.showLabels) eng.label(mP, 'Mars', { color: '#7c2d12', size: 16, lift: 1 });
+
+  if (S.view === 'sky') eng.line([eP, mP], { color: 'rgba(193,68,14,0.4)', width: 1.5, dash: [0.3, 0.25] });
+
+  eng.flush(ctx);
+  drawSkyInset();
+
+  roMotion.set(retro ? '<b style="color:#dc2626">moving backward (retrograde)</b>' : 'moving forward (prograde), as usual');
+  foot.set('Earth (inner, faster orbit) periodically <b>overtakes</b> Mars (outer, slower) — for a few weeks Mars briefly appears to drift <i>backward</i> against the fixed stars. ' +
+    'Mars never actually reverses course — it just <b>looks</b> that way from a moving platform. This is why the geocentric model needed ever more epicycles to explain what heliocentric motion explains in one line.');
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

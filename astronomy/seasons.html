@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Seasons — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', SUN_COL = '#fbbf24', EARTH_COL = '#3b82f6', AXIS_COL = '#475569', RAY_COL = '#f59e0b', MARK_COL = '#dc2626';
+
+const R_ORBIT = 9, EARTH_R = 1.3, ORBIT_PERIOD = 10;
+const TILT = 23.5 * Math.PI / 180;
+const A = [Math.sin(TILT), Math.cos(TILT), 0]; // fixed axis direction — does NOT change as Earth orbits
+
+const S = {
+  theta: -Math.PI / 2,   // orbital angle; -90° chosen so theta=0 sits at the equinox-like reference
+  running: true, speed: 1,
+  lat: -37,              // marker latitude in degrees (negative = southern hemisphere)
+  showAxis: true, showRays: true, showTerminator: true, showOrbit: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'The Seasons', subtitle: 'Axial tilt, not distance, drives the seasons — drag to orbit, scroll to zoom' });
+
+const gt = ui.group('Time of year');
+const posSlider = ui.slider(gt, 'Position in orbit', { min: 0, max: 360, step: 1, value: 0, fmt: v => v.toFixed(0) + '°' }, v => { S.theta = -Math.PI / 2 + v * Math.PI / 180; });
+ui.slider(gt, 'Speed', { min: 0, max: 2, step: 0.05, value: 1, fmt: v => v.toFixed(2) + '×' }, v => S.speed = v);
+ui.buttons(gt, [{ label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } }]);
+
+const gl = ui.group('Observer');
+ui.slider(gl, 'Latitude', { min: -66, max: 66, step: 1, value: -37, fmt: v => Math.abs(v).toFixed(0) + '°' + (v >= 0 ? ' N' : ' S') }, v => S.lat = v);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Axis (fixed tilt)', true, v => S.showAxis = v, { swatch: AXIS_COL });
+ui.toggle(gs, 'Sunlight rays', true, v => S.showRays = v, { swatch: RAY_COL });
+ui.toggle(gs, 'Day/night terminator', true, v => S.showTerminator = v);
+ui.toggle(gs, 'Orbit path', true, v => S.showOrbit = v);
+ui.toggle(gs, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roSeason = ui.readout(gr, 'Season at this latitude', '');
+const roElev = ui.readout(gr, 'Sun’s noon elevation', '');
+const roDay = ui.readout(gr, 'Day length', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 22, yaw: 0.55, pitch: 0.4 });
+
+let lastDelta = 0, lastT = 0;
+
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+
+  if (S.running) {
+    S.theta += (2 * Math.PI / ORBIT_PERIOD) * S.speed * dt;
+    posSlider.set(((S.theta + Math.PI / 2) * 180 / Math.PI % 360 + 360) % 360);
+  }
+
+  const earthPos = [R_ORBIT * Math.cos(S.theta), 0, R_ORBIT * Math.sin(S.theta)];
+  const sunDir = v3.norm(v3.mul(earthPos, -1));       // Earth -> Sun
+  const alongAxis = v3.dot(sunDir, A);
+  const e1 = v3.norm(v3.sub(sunDir, v3.mul(A, alongAxis))); // sun-facing meridian direction
+  const delta = Math.asin(Math.max(-1, Math.min(1, alongAxis))); // solar declination, radians
+  const latR = S.lat * Math.PI / 180;
+  const markerDir = v3.add(v3.mul(e1, Math.cos(latR)), v3.mul(A, Math.sin(latR)));
+  const markerPos = v3.add(earthPos, v3.mul(markerDir, EARTH_R));
+
+  const elevRad = Math.PI / 2 - Math.abs(latR - delta);
+  const elevDeg = Math.max(-90, Math.min(90, elevRad * 180 / Math.PI));
+
+  // day length via the sunrise equation: cos(H0) = -tan(lat)*tan(delta)
+  const cosH0 = Math.max(-1, Math.min(1, -Math.tan(latR) * Math.tan(delta)));
+  const H0deg = Math.acos(cosH0) * 180 / Math.PI;
+  const dayHours = (2 * H0deg) / 15;
+
+  const deltaDeg = delta * 180 / Math.PI;
+  const north = S.lat >= 0;
+  let season;
+  if (deltaDeg > TILT * 180 / Math.PI * 0.6) season = north ? 'Summer' : 'Winter';
+  else if (deltaDeg < -TILT * 180 / Math.PI * 0.6) season = north ? 'Winter' : 'Summer';
+  else season = (deltaDeg - lastDelta > 0) === north ? 'Spring' : 'Autumn';
+  lastDelta = deltaDeg;
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  eng.sphere([0, 0, 0], 1.6, SUN_COL, { stroke: '#d97706', strokeWidth: 2 });
+  if (S.labels) eng.label([0, 2.2, 0], 'Sun', { color: '#b45309', size: 20, lift: 2 });
+
+  if (S.showOrbit) {
+    const pts = [];
+    for (let i = 0; i <= 64; i++) { const a = (i / 64) * Math.PI * 2; pts.push([R_ORBIT * Math.cos(a), 0, R_ORBIT * Math.sin(a)]); }
+    eng.line(pts, { color: '#e2e8f0', width: 1.5 });
+  }
+
+  if (S.showRays) {
+    for (const off of [-1.5, 0, 1.5]) {
+      const p0 = v3.add(earthPos, v3.mul(sunDir, EARTH_R * 2.6));
+      eng.arrow(v3.add(p0, [0, off * 0.6, off * 0.2]), v3.add(earthPos, v3.mul(v3.norm(v3.add(sunDir, [0,0,0])), EARTH_R * 1.02)), { color: RAY_COL, width: 2 });
+    }
+  }
+
+  eng.sphere(earthPos, EARTH_R, EARTH_COL, { stroke: INK, strokeWidth: 2 });
+  if (S.labels) eng.label(v3.add(earthPos, [0, EARTH_R + 0.7, 0]), 'Earth', { color: '#1e3a8a', size: 16, lift: 1 });
+
+  if (S.showAxis) {
+    eng.line([v3.add(earthPos, v3.mul(A, -EARTH_R * 1.6)), v3.add(earthPos, v3.mul(A, EARTH_R * 1.6))], { color: AXIS_COL, width: 3 });
+    if (S.labels) eng.label(v3.add(earthPos, v3.mul(A, EARTH_R * 1.75)), 'axis (fixed direction)', { color: AXIS_COL, size: 12, lift: 1 });
+  }
+
+  if (S.showTerminator) {
+    const u = v3.norm(v3.cross(sunDir, [0, 1, 0.0001]));
+    const w = v3.cross(sunDir, u);
+    const ring = [];
+    for (let i = 0; i <= 48; i++) {
+      const a = (i / 48) * Math.PI * 2;
+      ring.push(v3.add(earthPos, v3.mul(v3.add(v3.mul(u, Math.cos(a)), v3.mul(w, Math.sin(a))), EARTH_R * 1.01)));
+    }
+    eng.line(ring, { color: '#1e293b', width: 2, dash: [0.15, 0.12] });
+  }
+
+  eng.sphere(markerPos, 0.14, MARK_COL, { stroke: '#fff', strokeWidth: 1.5 });
+  if (S.labels) eng.label(v3.add(markerPos, v3.mul(markerDir, 0.5)), 'observer', { color: MARK_COL, size: 13, lift: 1 });
+
+  eng.flush(ctx);
+  drawElevationInset(elevDeg, season);
+
+  roSeason.set(season);
+  roElev.set(elevDeg.toFixed(0) + '° above horizon');
+  roDay.set(H0deg <= 0.01 ? '0 h (polar night)' : (cosH0 <= -0.999 ? '24 h (polar day)' : dayHours.toFixed(1) + ' h'));
+  foot.set('Seasons come from Earth’s <b>axis staying pointed the same way in space</b> as it orbits — so each hemisphere leans toward the Sun for half the year and away for the other half. ' +
+    'It is <i>not</i> about distance from the Sun (Earth is actually closest to the Sun during the Northern Hemisphere’s winter).');
+
+  requestAnimationFrame(frame);
+}
+
+function drawElevationInset(elevDeg, season) {
+  const gw = 280, gh = 190;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  const cx = gx + gw / 2, hy = gy + gh - 46, rad = 90;
+  Draw.label(ctx, 'Noon sun angle at this latitude', cx, gy + 18, { size: 13, color: '#475569' });
+
+  // horizon
+  ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(cx - rad, hy); ctx.lineTo(cx + rad, hy); ctx.stroke();
+  Draw.label(ctx, 'horizon', cx + rad - 24, hy + 14, { size: 11, color: '#94a3b8' });
+
+  // sun ray at elevation angle
+  const clampedElev = Math.max(0, elevDeg);
+  const rad_ = Math.max(clampedElev, 0.1) * Math.PI / 180;
+  const sx = cx - rad * 0.95 * Math.cos(rad_), sy = hy - rad * 0.95 * Math.sin(rad_);
+  ctx.strokeStyle = RAY_COL; ctx.lineWidth = 3.5;
+  ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(cx, hy); ctx.stroke();
+  ctx.fillStyle = SUN_COL; ctx.strokeStyle = INK; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+  // angle arc
+  ctx.strokeStyle = '#1a1a2e'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, hy, 26, -Math.PI, -Math.PI + rad_, false); ctx.stroke();
+  Draw.label(ctx, elevDeg.toFixed(0) + '°', cx - 40, hy - 30, { size: 15, color: INK, weight: 800 });
+
+  Draw.label(ctx, season, cx, gy + gh - 14, { size: 16, color: MARK_COL, weight: 800 });
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

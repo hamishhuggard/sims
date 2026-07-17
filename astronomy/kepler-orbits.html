@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kepler's Laws &amp; Orbital Mechanics — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', SUN_COL = '#fbbf24', PLANET_COL = '#2563eb';
+const ORBIT_COL = '#94a3b8', WEDGE_COL = 'rgba(37,99,235,0.35)', FROZEN_COL = 'rgba(220,38,38,0.32)';
+
+const GM = 40;              // arbitrary gravitational parameter
+const WINDOW = 1.1;         // sim-time seconds the "sweeping wedge" trails
+
+const S = {
+  a: 6, e: 0.4,
+  timeSpeed: 1, running: true,
+  showOrbit: true, showWedge: true, showLabels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: "Kepler's Laws & Orbital Mechanics", subtitle: 'Ellipses, equal areas, and T² ∝ a³ — drag to orbit, scroll to zoom' });
+
+const go = ui.group('Orbit shape');
+ui.slider(go, 'Eccentricity e', { min: 0, max: 0.7, step: 0.05, value: 0.4, fmt: v => v.toFixed(2) }, v => { S.e = v; reshapeOrbit(); });
+ui.slider(go, 'Semi-major axis a', { min: 3, max: 9, step: 0.5, value: 6, fmt: v => v.toFixed(1) + ' units' }, v => { S.a = v; reshapeOrbit(); });
+
+const gt = ui.group('Time');
+ui.slider(gt, 'Time speed', { min: 0.2, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.timeSpeed = v);
+ui.buttons(gt, [
+  { label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } },
+  { label: '⟲ Reset to perihelion', onClick: resetOrbit }
+]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Orbit path', true, v => S.showOrbit = v, { swatch: ORBIT_COL });
+ui.toggle(gs, 'Equal-areas sweep wedge', true, v => S.showWedge = v, { swatch: WEDGE_COL });
+ui.toggle(gs, 'Labels', true, v => S.showLabels = v);
+ui.buttons(gs, [
+  { label: '📸 Capture wedge here', onClick: captureWedge }
+]);
+
+const gr = ui.group('Readings');
+const roSpeed = ui.readout(gr, 'Orbital speed', '');
+const roDist = ui.readout(gr, 'Distance from Sun', '');
+const roPeriod = ui.readout(gr, 'Period T (Kepler 3)', '');
+const roArea = ui.readout(gr, 'Swept area (live)', '');
+const roFrozenArea = ui.readout(gr, 'Swept area (captured)', '—');
+
+const foot = ui.footer(
+  "<b>Kepler's Laws:</b> 1) orbits are ellipses with the Sun at one focus. " +
+  "2) a line from Sun to planet sweeps <b>equal areas in equal times</b> — faster at perihelion, slower at aphelion. " +
+  "3) <b>T² ∝ a³</b> — period depends only on the semi-major axis, not eccentricity."
+);
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 22, yaw: 0.5, pitch: 0.55 });
+
+let pos = [0, 0, 0], vel = [0, 0, 0];
+let simT = 0, lastT = 0;
+let sweepBuf = [];
+let frozen = null; // { pts: [...], area }
+
+function accel(p) {
+  const r2 = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+  const r = Math.sqrt(r2) || 1e-6;
+  const f = -GM / (r2 * r);
+  return [p[0] * f, p[1] * f, p[2] * f];
+}
+
+function periodFor(a) { return 2 * Math.PI * Math.sqrt((a * a * a) / GM); }
+
+function resetOrbit() {
+  const rp = S.a * (1 - S.e);
+  const vp = Math.sqrt(GM * (1 + S.e) / (S.a * (1 - S.e)));
+  pos = [rp, 0, 0];
+  vel = [0, 0, vp];
+  simT = 0;
+  sweepBuf = [];
+  frozen = null;
+  roFrozenArea.set('—');
+}
+resetOrbit();
+
+/* keep the planet at its current orbital angle, but move it onto the
+   newly-shaped ellipse — so dragging e/a reshapes the orbit under the
+   planet instead of snapping it back to perihelion */
+function reshapeOrbit() {
+  const theta = Math.atan2(pos[2], pos[0]);
+  const p = S.a * (1 - S.e * S.e); // semi-latus rectum
+  const rNew = p / (1 + S.e * Math.cos(theta));
+  const x = rNew * Math.cos(theta), z = rNew * Math.sin(theta);
+  pos = [x, 0, z];
+  const speed = Math.sqrt(Math.max(0, GM * (2 / rNew - 1 / S.a)));
+  const tangentHat = [-Math.sin(theta), 0, Math.cos(theta)];
+  const sense = Math.sign(vel[0] * tangentHat[0] + vel[2] * tangentHat[2]) || 1;
+  vel = v3.mul(tangentHat, speed * sense);
+  sweepBuf = [];
+  frozen = null;
+  roFrozenArea.set('—');
+}
+
+/* shoelace area of the Sun-planet wedge fan over the trailing buffer */
+function wedgeArea(pts) {
+  let a2 = 0;
+  for (let i = 0; i < pts.length - 1; i++) a2 += Math.abs(pts[i][0] * pts[i + 1][2] - pts[i + 1][0] * pts[i][2]);
+  return a2 / 2;
+}
+
+function captureWedge() {
+  if (sweepBuf.length < 2) return;
+  const pts = sweepBuf.map(s => s.p);
+  frozen = { pts, area: wedgeArea(pts) };
+  roFrozenArea.set(frozen.area.toFixed(2) + ' units²');
+}
+
+function stepPhysics(simDt) {
+  const subDt = 0.005;
+  let remaining = simDt;
+  while (remaining > 1e-9) {
+    const h = Math.min(subDt, remaining);
+    const a0 = accel(pos);
+    const velHalf = v3.add(vel, v3.mul(a0, h / 2));
+    pos = v3.add(pos, v3.mul(velHalf, h));
+    const a1 = accel(pos);
+    vel = v3.add(velHalf, v3.mul(a1, h / 2));
+    remaining -= h;
+    simT += h;
+    sweepBuf.push({ t: simT, p: pos.slice() });
+  }
+  while (sweepBuf.length && simT - sweepBuf[0].t > WINDOW) sweepBuf.shift();
+}
+
+function drawOrbitPath() {
+  const b = S.a * Math.sqrt(1 - S.e * S.e);
+  const pts = [];
+  const N = 72;
+  for (let i = 0; i <= N; i++) {
+    const E = (i / N) * Math.PI * 2;
+    pts.push([S.a * (Math.cos(E) - S.e), 0, b * Math.sin(E)]);
+  }
+  eng.line(pts, { color: ORBIT_COL, width: 2.5 });
+}
+
+function drawWedge(pts, color, yLift) {
+  if (pts.length < 2) return;
+  const poly = [[0, yLift, 0]];
+  for (const p of pts) poly.push([p[0], yLift, p[2]]);
+  eng.poly(poly, color);
+}
+
+function frame(tms) {
+  const t = tms / 1000;
+  const dt = Math.min(t - lastT, 0.04);
+  lastT = t;
+
+  if (S.running) stepPhysics(dt * S.timeSpeed);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  if (S.showOrbit) drawOrbitPath();
+
+  if (S.showWedge) {
+    drawWedge(sweepBuf.map(s => s.p), WEDGE_COL, 0.04);
+    if (frozen) drawWedge(frozen.pts, FROZEN_COL, 0.02);
+  }
+
+  eng.sphere([0, 0, 0], 0.7, SUN_COL, { stroke: INK, strokeWidth: 2 });
+  if (S.showLabels) eng.label([0, 0, 0], 'Sun', { color: '#b45309', size: 18, dy: -26, lift: 1 });
+  eng.sphere(pos, 0.28, PLANET_COL, { stroke: INK, strokeWidth: 1.5 });
+  if (S.showLabels) eng.label(pos, 'planet', { color: '#334155', size: 15, dy: -20, lift: 1 });
+
+  eng.flush(ctx);
+
+  const speed = v3.len(vel);
+  const dist = v3.len(pos);
+  roSpeed.set(speed.toFixed(2) + ' units/s');
+  roDist.set(dist.toFixed(2) + ' units');
+  roPeriod.set(periodFor(S.a).toFixed(1) + ' s (sim time)');
+  roArea.set(wedgeArea(sweepBuf.map(s => s.p)).toFixed(2) + ' units²');
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
