@@ -52,7 +52,7 @@ const S = {
   indicator: 'none', // none | universal | red-litmus | blue-litmus | phenolphthalein
   showH: true, showOH: true, showWater: true, showBar: true, labels: true,
   labelledIons: false, // false = accurate molecule models (bare H+, bonded O-H for OH-); true = simple labelled spheres
-  sizeMul: 1, countMul: 1
+  sizeMul: 1, countMul: 1, speed: 1
 };
 
 const ui = SimUI({ back: '../index.html', title: 'pH & Indicators', subtitle: 'Acids release H⁺, bases release OH⁻ — drag to orbit, scroll to zoom' });
@@ -77,6 +77,7 @@ const gp = ui.group('Particles');
 ui.toggle(gp, 'Labelled spheres (vs molecule models)', false, v => S.labelledIons = v);
 ui.slider(gp, 'Particle size', { min: 0.4, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.sizeMul = v);
 ui.slider(gp, 'Number of particles', { min: 0.3, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.countMul = v);
+ui.slider(gp, 'Simulation speed', { min: 0, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.speed = v);
 
 const gv = ui.group('Show / hide');
 ui.toggle(gv, 'H⁺ ions', true, v => S.showH = v, { swatch: H_COL });
@@ -155,7 +156,7 @@ function frame(tms) {
   swarm.want('H+', { n: S.showH ? nH : 0, radius: hR, speed: 0.8 });
   swarm.want('OH-', { n: S.showOH ? nOH : 0, radius: oR, speed: 0.7 });
   swarm.want('H2O', { n: S.showWater ? Math.round(30 * S.countMul) : 0, radius: 0.04 * S.sizeMul, speed: 0.5 });
-  swarm.step(dt);
+  swarm.step(dt * S.speed);
 
   ctx.clearRect(0, 0, W(), H());
   eng.begin(W(), H());
@@ -171,7 +172,8 @@ function frame(tms) {
   const rodBottom = -2.45, rodTop = clampY + 0.4;
   eng.box([-2.2, BENCH + 0.06, 0], 0.55, 0.06, 0.55, STAND_DARK, { stroke: INK, strokeWidth: 1 });
   eng.box([-2.2, (rodBottom + rodTop) / 2, 0], 0.06, (rodTop - rodBottom) / 2, 0.06, STAND, { stroke: INK, strokeWidth: 1 });
-  eng.box([-1.1, clampY, 0], 1.1, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1 });
+  const ringR = VESSEL.r + 0.07;
+  eng.box([(-2.2 - ringR) / 2, clampY, 0], (2.2 - ringR) / 2, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1 });
   eng.line(circle3(clampY, VESSEL.r + 0.07), { color: STAND_DARK, width: 6 });
 
   drawTestTube(eng, Object.assign({}, VESSEL, { liquid: liquidColour() }));
