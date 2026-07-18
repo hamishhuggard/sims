@@ -21,6 +21,7 @@ const S = {
   mode: 'fission',
   chainReaction: true,
   gridN: 10,
+  neutronCount: 13,
   labels: true, showEnergyBar: true
 };
 
@@ -34,7 +35,8 @@ ui.segment(gm, null, [
 
 const gf = ui.group('Fission');
 ui.toggle(gf, 'Chain reaction', true, v => S.chainReaction = v);
-ui.slider(gf, 'Nuclei per layer', { min: 4, max: 14, step: 1, value: 10, fmt: v => v + '×' + v + ' × 3 layers = ' + (v * v * 3) }, v => { S.gridN = v; resetScene(); });
+ui.slider(gf, 'Number of nuclei', { min: 4, max: 14, step: 1, value: 10, fmt: v => String(v * v * 3) }, v => { S.gridN = v; resetScene(); });
+ui.slider(gf, 'Neutrons fired', { min: 1, max: 40, step: 1, value: 13, fmt: v => String(v) }, v => S.neutronCount = v);
 ui.buttons(gf, [
   { label: '⚛ Fire neutrons into the fuel', primary: true, onClick: fireNeutron },
   { label: '⟲ Reset', onClick: resetScene }
@@ -186,7 +188,9 @@ function fireNeutron() {
   const yMid = (yMin + yMax) / 2, zMid = (zMin + zMax) / 2;
   const gunX = xMin - 5;
 
-  const BEAM_N = 9, spreadY = Math.max(0.2, (yMax - yMin) * 0.12), spreadZ = Math.max(0.2, (zMax - zMin) * 0.12);
+  const BEAM_N = Math.max(1, Math.round(S.neutronCount * 0.7));
+  const STRAY_N = Math.max(0, S.neutronCount - BEAM_N);
+  const spreadY = Math.max(0.2, (yMax - yMin) * 0.12), spreadZ = Math.max(0.2, (zMax - zMin) * 0.12);
   for (let i = 0; i < BEAM_N; i++) {
     const ty = yMid + (Math.random() * 2 - 1) * spreadY, tz = zMid + (Math.random() * 2 - 1) * spreadZ;
     const start = [gunX, ty, tz];
@@ -194,7 +198,6 @@ function fireNeutron() {
     freeNeutrons.push({ x: start[0], y: start[1], z: start[2], vx: v[0], vy: v[1], vz: v[2], seed: true });
   }
 
-  const STRAY_N = 4;
   for (let i = 0; i < STRAY_N; i++) {
     const tgt = [xMin + Math.random() * (xMax - xMin), yMin + Math.random() * (yMax - yMin), zMin + Math.random() * (zMax - zMin)];
     const start = [gunX, yMin + Math.random() * (yMax - yMin), zMin + Math.random() * (zMax - zMin)];
