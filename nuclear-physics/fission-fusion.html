@@ -20,6 +20,7 @@ const U_COL = '#a855f7', D_COL = '#2563eb', T_COL = '#16a34a', HE_COL = '#e63946
 const S = {
   mode: 'fission',
   chainReaction: true,
+  gridN: 10,
   labels: true, showEnergyBar: true
 };
 
@@ -29,14 +30,24 @@ const gm = ui.group('Process');
 ui.segment(gm, null, [
   { value: 'fission', label: 'Fission (split)' },
   { value: 'fusion', label: 'Fusion (join)' }
-], 'fission', v => { S.mode = v; resetScene(); });
+], 'fission', v => { S.mode = v; showModeGroups(); resetScene(); });
 
 const gf = ui.group('Fission');
 ui.toggle(gf, 'Chain reaction', true, v => S.chainReaction = v);
-ui.buttons(gf, [{ label: '⚛ Fire neutron at U-235', primary: true, onClick: fireNeutron }]);
+ui.slider(gf, 'Nuclei per layer', { min: 4, max: 14, step: 1, value: 10, fmt: v => v + '×' + v + ' × 3 layers = ' + (v * v * 3) }, v => { S.gridN = v; resetScene(); });
+ui.buttons(gf, [
+  { label: '⚛ Fire neutrons into the fuel', primary: true, onClick: fireNeutron },
+  { label: '⟲ Reset', onClick: resetScene }
+]);
 
 const gu = ui.group('Fusion');
 ui.buttons(gu, [{ label: '☀ Force D + T together', primary: true, onClick: forceFusion }]);
+
+function showModeGroups() {
+  gf.style.display = S.mode === 'fission' ? '' : 'none';
+  gu.style.display = S.mode === 'fusion' ? '' : 'none';
+}
+showModeGroups();
 
 const gv = ui.group('Show / hide');
 ui.toggle(gv, 'Labels', true, v => S.labels = v);
@@ -50,7 +61,7 @@ const foot = ui.footer('');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
 
 const { canvas, ctx, W, H } = SimCanvas();
-const eng = Engine3D(canvas, { dist: 17, yaw: 0.5, pitch: 0.3 });
+const eng = Engine3D(canvas, { dist: 13, yaw: 0.5, pitch: 0.32 });
 
 /* --- nucleon clusters ---------------------------------------------------
    A nucleus is drawn as a raspberry-blob of proton (red) / neutron (grey)
@@ -117,23 +128,27 @@ function drawCluster(c, cluster, alpha) {
   }
 }
 
-/* a chunk of fuel: nuclei packed into a roughly spherical pellet, spaced far
-   enough apart (minSep) that their blobs never overlap, dense enough that a
-   fired neutron has good odds of starting a real cascade */
-function buildFuelPositions(n, minSep, R, yScale, yOffset) {
-  yScale = yScale || 1; yOffset = yOffset || 0;
-  const pts = [[0, yOffset, 0]];
-  let tries = 0;
-  while (pts.length < n && tries < 40000) {
-    tries++;
-    const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2;
-    const rad = R * Math.cbrt(Math.random());
-    const s = Math.sqrt(1 - u * u);
-    const p = [rad * s * Math.cos(a), rad * u * yScale + yOffset, rad * s * Math.sin(a)];
-    if (pts.some(o => Math.hypot(p[0] - o[0], p[1] - o[1], p[2] - o[2]) < minSep)) continue;
-    pts.push(p);
+/* a chunk of fuel: three 10x10 hexagonal-close-packed sheets stacked on top
+   of each other (like cannonballs stacked in a crate) — each sheet's rows are
+   offset by half a spacing so neighbours touch, and each sheet nests into the
+   pockets of the one below it. NUC_R/LATTICE_S size the individual nuclei and
+   their spacing; everything else (fragment size, hit radius) is scaled off
+   NUC_R via SCALE so the whole picture stays proportional. */
+const NUC_R = 0.55, LATTICE_S = 1.3, SCALE = NUC_R / 0.8;
+function buildLatticeBlock(cols, rows, layers, s) {
+  const rowDx = s / 2, rowDz = s * Math.sqrt(3) / 2;
+  const layerDx = s / 2, layerDz = s * Math.sqrt(3) / 6; // nests each layer into the pockets below
+  const layerDy = s * Math.sqrt(2 / 3);
+  const pts = [];
+  for (let L = 0; L < layers; L++) {
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        pts.push([i * s + (j % 2) * rowDx + L * layerDx, L * layerDy, j * rowDz + L * layerDz]);
+      }
+    }
   }
-  return pts;
+  const c = pts.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]).map(v => v / pts.length);
+  return pts.map(p => [p[0] - c[0], p[1] - c[1], p[2] - c[2]]);
 }
 
 let uraniumNuclei = [], freeNeutrons = [], fragments = [], flashes = [];
@@ -143,9 +158,11 @@ function resetScene() {
   uraniumNuclei = []; freeNeutrons = []; fragments = []; flashes = [];
   reactionCount = 0; energyBarLevel = 0;
   if (S.mode === 'fission') {
-    const positions = buildFuelPositions(32, 1.8, 4.3, 0.55, 0.5);
-    for (const p of positions) uraniumNuclei.push({ x: p[0], y: p[1], z: p[2], alive: true, cluster: makeCluster(34, 0.8, 13) });
+    eng.cam.dist = 3 * S.gridN;
+    const positions = buildLatticeBlock(S.gridN, S.gridN, 3, LATTICE_S);
+    for (const p of positions) uraniumNuclei.push({ x: p[0], y: p[1], z: p[2], alive: true, cluster: makeCluster(16, NUC_R, 6) });
   } else {
+    eng.cam.dist = 13;
     fragments = [
       { type: 'D', label: 'D', labelCol: D_COL, cluster: makeCluster(2, 0, 1), x: -2.2, y: 0, z: 0, vx: 0.55, vy: 0, vz: 0 },
       { type: 'T', label: 'T', labelCol: T_COL, cluster: makeCluster(3, 0, 1), x: 2.2, y: 0, z: 0, vx: -0.55, vy: 0, vz: 0 }
@@ -154,14 +171,36 @@ function resetScene() {
 }
 resetScene();
 
+/* a thin beam straight through the middle of the stack, plus a few strays at
+   random angles — the beam alone would only ever touch nuclei on its central
+   axis, so the strays are what eventually reach every nucleus over repeated
+   firings */
 function fireNeutron() {
-  if (S.mode !== 'fission' || !uraniumNuclei.length) return;
-  const target = uraniumNuclei.find(u => u.alive);
-  if (!target) return;
-  const start = [-7, 1, 0];
-  const dir = v3.norm(v3.sub([target.x, target.y, target.z], start));
-  const v = v3.mul(dir, 3.5);
-  freeNeutrons.push({ x: start[0], y: start[1], z: start[2], vx: v[0], vy: v[1], vz: v[2], targetHint: target });
+  if (S.mode !== 'fission') return;
+  const alive = uraniumNuclei.filter(u => u.alive);
+  if (!alive.length) return;
+  const xs = alive.map(u => u.x), ys = alive.map(u => u.y), zs = alive.map(u => u.z);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const yMin = Math.min(...ys), yMax = Math.max(...ys);
+  const zMin = Math.min(...zs), zMax = Math.max(...zs);
+  const yMid = (yMin + yMax) / 2, zMid = (zMin + zMax) / 2;
+  const gunX = xMin - 5;
+
+  const BEAM_N = 9, spreadY = Math.max(0.2, (yMax - yMin) * 0.12), spreadZ = Math.max(0.2, (zMax - zMin) * 0.12);
+  for (let i = 0; i < BEAM_N; i++) {
+    const ty = yMid + (Math.random() * 2 - 1) * spreadY, tz = zMid + (Math.random() * 2 - 1) * spreadZ;
+    const start = [gunX, ty, tz];
+    const v = v3.mul(v3.norm(v3.sub([xMax, ty, tz], start)), 3.6 + Math.random() * 1.2);
+    freeNeutrons.push({ x: start[0], y: start[1], z: start[2], vx: v[0], vy: v[1], vz: v[2], seed: true });
+  }
+
+  const STRAY_N = 4;
+  for (let i = 0; i < STRAY_N; i++) {
+    const tgt = [xMin + Math.random() * (xMax - xMin), yMin + Math.random() * (yMax - yMin), zMin + Math.random() * (zMax - zMin)];
+    const start = [gunX, yMin + Math.random() * (yMax - yMin), zMin + Math.random() * (zMax - zMin)];
+    const v = v3.mul(v3.norm(v3.sub(tgt, start)), 3.2 + Math.random() * 1.6);
+    freeNeutrons.push({ x: start[0], y: start[1], z: start[2], vx: v[0], vy: v[1], vz: v[2], seed: true });
+  }
 }
 
 function splitNucleus(u) {
@@ -171,10 +210,10 @@ function splitNucleus(u) {
   flashes.push({ x: u.x, y: u.y, z: u.z, life: 0.4, maxLife: 0.4 });
   // two daughter nuclei fly apart — the heavier Ba-144 recoils slower than Kr-89
   const a = Math.random() * Math.PI * 2;
-  fragments.push({ type: 'frag', label: 'Ba-144', labelCol: '#475569', cluster: makeCluster(20, 0.68, 8),
-    x: u.x, y: u.y, z: u.z, vx: Math.cos(a) * 1.0, vy: 0.15, vz: Math.sin(a) * 1.0 });
-  fragments.push({ type: 'frag', label: 'Kr-89', labelCol: '#475569', cluster: makeCluster(14, 0.58, 6),
-    x: u.x, y: u.y, z: u.z, vx: -Math.cos(a) * 1.6, vy: -0.15, vz: -Math.sin(a) * 1.6 });
+  fragments.push({ type: 'frag', label: 'Ba-144', labelCol: '#475569', cluster: makeCluster(20, 0.68 * SCALE, 8),
+    x: u.x, y: u.y, z: u.z, bx: u.x, by: u.y, bz: u.z, vx: Math.cos(a) * 1.0, vy: 0.15, vz: Math.sin(a) * 1.0 });
+  fragments.push({ type: 'frag', label: 'Kr-89', labelCol: '#475569', cluster: makeCluster(14, 0.58 * SCALE, 6),
+    x: u.x, y: u.y, z: u.z, bx: u.x, by: u.y, bz: u.z, vx: -Math.cos(a) * 1.6, vy: -0.15, vz: -Math.sin(a) * 1.6 });
   // 2-3 new free neutrons
   const nOut = 2 + Math.floor(Math.random() * 2);
   for (let i = 0; i < nOut; i++) {
@@ -219,17 +258,20 @@ function frame(tms) {
       let hit = null;
       for (const u of uraniumNuclei) {
         if (!u.alive) continue;
-        if (Math.hypot(nn.x - u.x, nn.y - u.y, nn.z - u.z) < 0.9) { hit = u; break; }
+        if (Math.hypot(nn.x - u.x, nn.y - u.y, nn.z - u.z) < 0.62) { hit = u; break; }
       }
-      if (hit && (S.chainReaction || nn.targetHint)) { splitNucleus(hit); freeNeutrons.splice(i, 1); continue; }
-      eng.sphere([nn.x, nn.y, nn.z], 0.22, NEUTRON_COL, { stroke: 'rgba(26,26,46,0.35)', strokeWidth: 1.2 });
-      if (Math.abs(nn.x) > 8 || Math.abs(nn.y) > 6 || Math.abs(nn.z) > 6) freeNeutrons.splice(i, 1);
+      if (hit && (S.chainReaction || nn.seed)) { splitNucleus(hit); freeNeutrons.splice(i, 1); continue; }
+      eng.sphere([nn.x, nn.y, nn.z], 0.15, NEUTRON_COL, { stroke: 'rgba(26,26,46,0.35)', strokeWidth: 1.2 });
+      if (Math.abs(nn.x) > 24 || Math.abs(nn.y) > 10 || Math.abs(nn.z) > 20) freeNeutrons.splice(i, 1);
     }
     for (let i = fragments.length - 1; i >= 0; i--) {
       const f = fragments[i];
       f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;
-      const rr = Math.hypot(f.x, f.y, f.z);
-      const alpha = Math.min(1, (7.2 - rr) / 1.6);
+      // fade out once a fragment has travelled a bit from the nucleus it was
+      // born from (not from the world origin — the block is huge now, so a
+      // fragment born near the edge would otherwise vanish instantly)
+      const traveled = Math.hypot(f.x - f.bx, f.y - f.by, f.z - f.bz);
+      const alpha = Math.min(1, (3.2 - traveled) / 1.4);
       if (alpha <= 0) { fragments.splice(i, 1); continue; }
       drawCluster([f.x, f.y, f.z], f.cluster, alpha);
       if (S.labels && alpha > 0.5) eng.label([f.x, f.y + f.cluster.R + 0.4, f.z], f.label, { color: f.labelCol, size: 13, lift: 2 });
@@ -237,10 +279,10 @@ function frame(tms) {
     for (let i = flashes.length - 1; i >= 0; i--) {
       const fl = flashes[i]; fl.life -= dt;
       const a = Math.max(0, fl.life / fl.maxLife);
-      eng.sphere([fl.x, fl.y, fl.z], 0.8 + (1 - a) * 1.2, 'rgba(250,204,21,' + (a * 0.5).toFixed(2) + ')', { highlight: 'rgba(254,240,138,0.6)' });
+      eng.sphere([fl.x, fl.y, fl.z], (0.8 + (1 - a) * 1.2) * SCALE, 'rgba(250,204,21,' + (a * 0.5).toFixed(2) + ')', { highlight: 'rgba(254,240,138,0.6)' });
       if (fl.life <= 0) flashes.splice(i, 1);
     }
-    if (S.labels && uraniumNuclei.some(u => u.alive)) eng.label([0, -3.1, 0], 'U-235 nuclei (a slice of the fuel) — protons red, neutrons grey', { color: '#475569', size: 14, lift: 2 });
+    if (S.labels && uraniumNuclei.some(u => u.alive)) eng.label([0, -1.8, S.gridN * 0.75], 'U-235 nuclei (a slice of the fuel) — protons red, neutrons grey', { color: '#475569', size: 14, lift: 2 });
   } else {
     const d = fragments.find(f => f.type === 'D'), tt = fragments.find(f => f.type === 'T');
     if (d && tt) {
