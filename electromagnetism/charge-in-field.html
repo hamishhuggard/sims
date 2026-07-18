@@ -24,7 +24,7 @@ const S = {
   showField: true, showV: true, showF: true, trail: true, labels: true
 };
 
-const ui = SimUI({ back: '../index.html', title: 'Charge in a Magnetic Field', subtitle: 'F = Bqv → circular motion — drag to orbit, scroll to zoom' });
+const ui = SimUI({ back: '../index.html', title: 'Charge in a Magnetic Field', subtitle: '$F = Bqv$ → circular motion — drag to orbit, scroll to zoom' });
 
 const gc = ui.group('The charge');
 ui.segment(gc, 'Charge sign', [
@@ -53,9 +53,9 @@ ui.toggle(gs, 'Path trail', true, v => S.trail = v);
 ui.toggle(gs, 'Labels', true, v => S.labels = v);
 
 const gr = ui.group('Readings');
-const roF = ui.readout(gr, 'Force F = Bqv', '');
-const roR = ui.readout(gr, 'Radius r = mv/qB', '');
-const roT = ui.readout(gr, 'Period T = 2πm/qB', '');
+const roF = ui.readout(gr, 'Force $F = Bqv$', '');
+const roR = ui.readout(gr, 'Radius $r = mv/qB$', '');
+const roT = ui.readout(gr, 'Period $T = 2\\pi m/qB$', '');
 
 const foot = ui.footer('');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
@@ -168,7 +168,7 @@ function frame(tms) {
     roF.set(F.toFixed(2) + ' N');
     roR.set((S.m * hspd / (S.q * S.B)).toFixed(2) + ' m');
     roT.set((2 * Math.PI * S.m / (S.q * S.B)).toFixed(2) + ' s');
-    foot.set('F = Bqv is always ⊥ to v → it changes <i>direction</i>, not speed → <b>circular motion</b> with r = mv / qB' +
+    foot.set('$F = Bqv$ is always ⊥ to v → it changes <i>direction</i>, not speed → <b>circular motion</b> with $r = mv/qB$' +
       (S.vy > 0.05 ? ' &nbsp;(+ steady vertical drift = a <b>helix</b>)' : ''));
   }
   requestAnimationFrame(frame);

@@ -20,7 +20,7 @@ const S = {
   cut: false
 };
 
-const ui = SimUI({ back: '../index.html', title: 'Circular Motion', subtitle: 'A ball whirled on a string — F꜀ = mv²/r — drag to orbit, scroll to zoom' });
+const ui = SimUI({ back: '../index.html', title: 'Circular Motion', subtitle: 'A ball whirled on a string — $F_c = mv^2/r$ — drag to orbit, scroll to zoom' });
 
 const gc = ui.group('The ball on a string');
 ui.slider(gc, 'Speed v', { min: 1, max: 8, step: 0.5, value: 4, fmt: v => v.toFixed(1) + ' m/s' }, v => S.speed = v);
@@ -37,9 +37,9 @@ ui.toggle(gv, 'Velocity vector', true, v => S.showV = v, { swatch: VEL_COL });
 ui.toggle(gv, 'Labels', true, v => S.labels = v);
 
 const gr = ui.group('Readings');
-const roFc = ui.readout(gr, 'F꜀ = mv²/r', '');
-const roAc = ui.readout(gr, 'a꜀ = v²/r', '');
-const roT = ui.readout(gr, 'Period T = 2πr/v', '');
+const roFc = ui.readout(gr, '$F_c = mv^2/r$', '');
+const roAc = ui.readout(gr, '$a_c = v^2/r$', '');
+const roT = ui.readout(gr, 'Period $T = 2\\pi r/v$', '');
 
 const foot = ui.footer('');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
@@ -123,7 +123,7 @@ function frame(tms) {
   roT.set(T.toFixed(2) + ' s');
   foot.set(S.cut
     ? "The string tension was the <b>only</b> thing bending the path — cut it and the ball flies off in a <b>straight line</b> (tangent to the circle), <i>not</i> outward along the radius."
-    : "<b>F꜀ = mv²/r</b> points <i>inward</i>, toward the centre — it doesn't speed the ball up, it just keeps changing its <i>direction</i>.");
+    : "<b>$F_c = mv^2/r$</b> points <i>inward</i>, toward the centre — it doesn't speed the ball up, it just keeps changing its <i>direction</i>.");
 
   requestAnimationFrame(frame);
 }

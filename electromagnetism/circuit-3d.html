@@ -408,17 +408,17 @@ function frame(tms) {
 
   const V = S.V, R1 = S.R1, R2 = S.R2, R3 = S.R3;
   if (S.preset === 'loop') {
-    foot.set('V = I R &nbsp;→&nbsp; I = V / R = ' + V + ' / ' + R1 + ' = <b>' + (S.switchClosed ? (V / R1).toFixed(2) : '0 (switch open)') + ' A</b>' +
+    foot.set('$V = IR$ $\\Rightarrow$ $I = V/R = ' + V + '/' + R1 + ' = $ <b>' + (S.switchClosed ? (V / R1).toFixed(2) : '0 (switch open)') + ' A</b>' +
       '<div class="small">A circuit needs a power source, conductors, and a complete (closed) loop</div>');
   } else if (S.preset === 'series') {
-    foot.set('Series: R<sub>T</sub> = R1 + R2 = ' + (R1 + R2) + ' Ω &nbsp;·&nbsp; same I everywhere &nbsp;·&nbsp; voltages share: ' +
-      (V - I * R2 >= 0 ? '' : '') + 'V1 + V2 = ' + (I * R1).toFixed(1) + ' + ' + (I * R2).toFixed(1) + ' = ' + V + ' V');
+    foot.set('Series: $R_T = R1 + R2 = ' + (R1 + R2) + '$ Ω &nbsp;·&nbsp; same I everywhere &nbsp;·&nbsp; voltages share: ' +
+      (V - I * R2 >= 0 ? '' : '') + '$V_1 + V_2 = ' + (I * R1).toFixed(1) + ' + ' + (I * R2).toFixed(1) + ' = ' + V + '$ V');
   } else if (S.preset === 'parallel') {
-    foot.set('Parallel: 1/R<sub>T</sub> = 1/R1 + 1/R2 → R<sub>T</sub> = ' + RT.toFixed(1) + ' Ω &nbsp;·&nbsp; same V across branches &nbsp;·&nbsp; currents share: ' +
+    foot.set('Parallel: $1/R_T = 1/R1 + 1/R2$ $\\Rightarrow$ $R_T = ' + RT.toFixed(1) + '$ Ω &nbsp;·&nbsp; same V across branches &nbsp;·&nbsp; currents share: ' +
       (V / R1).toFixed(2) + ' + ' + (V / R2).toFixed(2) + ' = ' + I.toFixed(2) + ' A');
   } else {
     const Rp = 1 / (1 / R2 + 1 / R3);
-    foot.set('R<sub>T</sub> = R1 + (R2 ∥ R3) = ' + R1 + ' + ' + Rp.toFixed(1) + ' = ' + RT.toFixed(1) + ' Ω &nbsp;·&nbsp; I<sub>T</sub> = ' + I.toFixed(2) + ' A splits between R2 and R3');
+    foot.set('$R_T = R1 + (R2 \\parallel R3) = ' + R1 + ' + ' + Rp.toFixed(1) + ' = ' + RT.toFixed(1) + '$ Ω &nbsp;·&nbsp; $I_T = ' + I.toFixed(2) + '$ A splits between R2 and R3');
   }
 
   requestAnimationFrame(frame);

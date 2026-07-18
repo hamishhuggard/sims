@@ -156,7 +156,7 @@ function frame(tms) {
   const upright = magnification > 0;
   roType.set((real ? 'real, ' : 'virtual, ') + (upright ? 'upright' : 'inverted') + (Math.abs(magnification) > 1 ? ', enlarged' : Math.abs(magnification) < 1 ? ', diminished' : ', same size'));
 
-  foot.set('<b>1/f = 1/u + 1/v</b> &mdash; converging lenses form real, inverted images when the object is beyond F, ' +
+  foot.set('<b>$1/f = 1/u + 1/v$</b> &mdash; converging lenses form real, inverted images when the object is beyond F, ' +
     'and magnified virtual upright images when inside F. Diverging lenses always form a diminished, upright, virtual image.');
 
   requestAnimationFrame(frame);

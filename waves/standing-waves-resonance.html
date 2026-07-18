@@ -38,8 +38,8 @@ ui.toggle(gs, 'Labels', true, v => S.labels = v);
 
 const gr = ui.group('Readings');
 const roN = ui.readout(gr, 'Nearest harmonic n', '');
-const roFn = ui.readout(gr, 'Resonant f_n = n·v / 2L', '');
-const roLambda = ui.readout(gr, 'Wavelength λ_n = 2L / n', '');
+const roFn = ui.readout(gr, 'Resonant $f_n = nv/2L$', '');
+const roLambda = ui.readout(gr, 'Wavelength $\\lambda_n = 2L/n$', '');
 const roAmp = ui.readout(gr, 'Standing-wave amplitude', '');
 
 const foot = ui.footer('');
@@ -103,7 +103,7 @@ function frame(tms) {
   roLambda.set((2 * L / n).toFixed(2) + ' m');
   roAmp.set(amp.toFixed(2) + ' m' + (gain > 0.9 ? ' — resonance!' : ''));
 
-  foot.set('Standing waves only build up at <b>f = n·v / 2L</b> (both ends fixed = nodes) — sweep the frequency and the amplitude only swells near these resonant frequencies; everywhere else the string barely moves.');
+  foot.set('Standing waves only build up at <b>$f = nv/2L$</b> (both ends fixed = nodes) — sweep the frequency and the amplitude only swells near these resonant frequencies; everywhere else the string barely moves.');
 
   requestAnimationFrame(frame);
 }

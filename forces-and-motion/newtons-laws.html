@@ -149,7 +149,7 @@ function frame(tms) {
     const aA = S.force2 / S.massA2, aB = S.force2 / S.massB2;
     roMain.set('a (blue) = F/m = ' + aA.toFixed(2) + ' m/s²');
     roMain2.set('a (orange) = F/m = ' + aB.toFixed(2) + ' m/s²');
-    foot.set("<b>Newton's 2nd Law:</b> a = F / m — the <i>same</i> force gives the lighter block more acceleration. Same force, less mass, more acceleration.");
+    foot.set("<b>Newton's 2nd Law:</b> $a = F/m$ — the <i>same</i> force gives the lighter block more acceleration. Same force, less mass, more acceleration.");
   } else {
     eng.box([l3.xA, -0.6, 0], 0.55, 0.9, 0.55, BLOCK_A, { stroke: INK, strokeWidth: 2 });
     eng.box([l3.xB, -0.6, 0], 0.7, 0.9, 0.7, BLOCK_B, { stroke: INK, strokeWidth: 2 });

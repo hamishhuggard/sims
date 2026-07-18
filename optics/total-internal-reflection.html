@@ -193,7 +193,7 @@ function frame(tms) {
   roCrit.set((critAngle * 180 / Math.PI).toFixed(1) + '°');
   roStatus.set(ray.escaped ? 'escaped through the wall (below critical angle)' : 'trapped by total internal reflection');
 
-  foot.set('Light hitting the core–cladding wall at an angle <b>greater</b> than the critical angle (θc = sin⁻¹(1/n)) undergoes ' +
+  foot.set('Light hitting the core–cladding wall at an angle <b>greater</b> than the critical angle ($\\theta_c = \\sin^{-1}(1/n)$) undergoes ' +
     '<b>total internal reflection</b> and stays trapped — this is how optical fibres carry light around bends with almost no loss. ' +
     'Too sharp a bend, or too shallow an entry angle, and light leaks out instead.');
 

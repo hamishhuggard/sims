@@ -41,8 +41,8 @@ ui.toggle(gs, 'Medium particles', true, v => S.showParticles = v, { swatch: PART
 ui.toggle(gs, 'Labels', true, v => S.labels = v);
 
 const gr = ui.group('Readings');
-const roLambda = ui.readout(gr, 'Wavelength λ = v / f', '');
-const roT = ui.readout(gr, 'Period T = 1 / f', '');
+const roLambda = ui.readout(gr, 'Wavelength $\\lambda = v/f$', '');
+const roT = ui.readout(gr, 'Period $T = 1/f$', '');
 
 const foot = ui.footer('');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
@@ -120,7 +120,7 @@ function frame(tms) {
   roLambda.set(lambda.toFixed(2) + ' m');
   roT.set((1 / S.freq).toFixed(2) + ' s');
 
-  foot.set('<b>v = f·λ</b> — for a fixed wave speed (set by the medium), increasing frequency shortens wavelength, and vice versa. ' +
+  foot.set('<b>$v = f\\lambda$</b> — for a fixed wave speed (set by the medium), increasing frequency shortens wavelength, and vice versa. ' +
     (S.mode === 'transverse'
       ? 'Transverse: particles oscillate <b>perpendicular</b> to the direction of travel.'
       : 'Longitudinal: particles oscillate <b>parallel</b> to the direction of travel — bunching into compressions and rarefactions.'));

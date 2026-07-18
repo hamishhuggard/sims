@@ -24,7 +24,7 @@ const S = {
   showOrbit: true, showWedge: true, showLabels: true
 };
 
-const ui = SimUI({ back: '../index.html', title: "Kepler's Laws & Orbital Mechanics", subtitle: 'Ellipses, equal areas, and T² ∝ a³ — drag to orbit, scroll to zoom' });
+const ui = SimUI({ back: '../index.html', title: "Kepler's Laws & Orbital Mechanics", subtitle: 'Ellipses, equal areas, and $T^2 \\propto a^3$ — drag to orbit, scroll to zoom' });
 
 const go = ui.group('Orbit shape');
 ui.slider(go, 'Eccentricity e', { min: 0, max: 0.7, step: 0.05, value: 0.4, fmt: v => v.toFixed(2) }, v => { S.e = v; reshapeOrbit(); });
@@ -55,7 +55,7 @@ const roFrozenArea = ui.readout(gr, 'Swept area (captured)', '—');
 const foot = ui.footer(
   "<b>Kepler's Laws:</b> 1) orbits are ellipses with the Sun at one focus. " +
   "2) a line from Sun to planet sweeps <b>equal areas in equal times</b> — faster at perihelion, slower at aphelion. " +
-  "3) <b>T² ∝ a³</b> — period depends only on the semi-major axis, not eccentricity."
+  "3) <b>$T^2 \\propto a^3$</b> — period depends only on the semi-major axis, not eccentricity."
 );
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
 
