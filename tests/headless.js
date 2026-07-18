@@ -90,6 +90,13 @@ async function launch(url, { width = 1280, height = 800 } = {}){
 
   return {
     eval: evalIn,
+    /* navigate the same tab/profile to a new URL (e.g. to check localStorage
+       persistence across pages) — unlike a fresh launch(), this keeps the
+       same browser profile/origin storage. */
+    async navigate(url){
+      await send("Page.enable", {}, sessionId);
+      await send("Page.navigate", { url }, sessionId);
+    },
     /* render the page to a PNG in-process (no display needed — works headless) */
     async screenshot(file){
       await send("Page.enable", {}, sessionId);

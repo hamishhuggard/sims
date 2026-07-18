@@ -15,6 +15,13 @@
   --cur: #d97706;      /* conventional current */
 }
 
+/* Dark mode: one global invert+hue-rotate filter darkens the chrome and the
+   3D canvas scenes together, cheaply, instead of re-theming every sim's
+   hardcoded drawing colors. Screenshots (hub thumbnails) get the filter
+   applied twice so they cancel out and render normally. See lib/theme.js. */
+html[data-theme="dark"] { filter: invert(1) hue-rotate(180deg); }
+html[data-theme="dark"] img { filter: invert(1) hue-rotate(180deg); }
+
 html, body { width: 100vw; height: 100vh; overflow: hidden; }
 
 body {
@@ -62,6 +69,31 @@ canvas#sim {
 }
 .sim-header a.back:hover { background: var(--paper2); }
 
+/* ---- theme toggle ---- */
+button.theme-toggle {
+  font-size: 17px;
+  line-height: 1;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+button.theme-toggle:hover { background: var(--paper2); }
+button.theme-toggle.small { width: 28px; height: 28px; font-size: 14px; border-width: 2px; }
+button.theme-toggle.floating {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 20;
+}
+
 /* ---- control panel ---- */
 .sim-panel {
   position: absolute;
@@ -78,8 +110,8 @@ canvas#sim {
 }
 .sim-panel .panel-head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 8px;
   padding: 10px 16px;
   font-weight: 800;
   font-size: 18px;
@@ -87,6 +119,7 @@ canvas#sim {
   user-select: none;
   border-bottom: 3px solid var(--ink);
 }
+.sim-panel .panel-head > span:first-child { flex: 1; }
 .sim-panel.collapsed .panel-head { border-bottom: none; }
 .sim-panel.collapsed .panel-body { display: none; }
 .sim-panel .panel-body { padding: 6px 16px 14px; }

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Simulation Zoo</title>
 <link rel="stylesheet" href="sim.css">
+<script src="lib/theme.js"></script>
 <style>
 html, body { height: auto; overflow: auto; }
 body { padding: 40px 24px 80px; }
@@ -420,6 +421,9 @@ body { padding: 40px 24px 80px; }
   </div>
 </div>
 
-<script>window.BOOT_DONE = true;</script>
+<script>
+document.body.appendChild(Theme.mountToggle({ floating: true }));
+window.BOOT_DONE = true;
+</script>
 </body>
 </html>
