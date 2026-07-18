@@ -66,22 +66,35 @@ regardless of ratio. Chart axes auto-scale to whichever nuclide is selected,
 so light and heavy presets both stay readable.
 
 **Fission & Fusion** — segment control switches between two scenarios in the
-same 3D scene. Fission: fire a neutron at a scattered field of U-235 nuclei,
-optionally enabling a chain reaction so each fission's released neutrons can
-trigger further fissions. Fusion: push a deuterium and tritium nucleus
-together against their mutual repulsion; close the gap far enough and they
-fuse into He + a neutron, releasing energy. Good for a direct side-by-side of
-"splitting a heavy nucleus" vs "joining two light nuclei" both releasing
-energy — the common misconception that fission and fusion are opposite in
-*mechanism* rather than just opposite in *which end of the mass curve they
-operate on*.
+same 3D scene. Nuclei are drawn as clusters of individual proton/neutron
+spheres sized by mass number (not flat balls), so students can see U-235 is
+a much bigger blob than the Ba-144/Kr-89 fragments it splits into, and that
+D/T/He-4 are tiny by comparison. Fission: fire a neutron at a scattered
+field of U-235 nuclei, optionally enabling a chain reaction so each
+fission's released neutrons can trigger further fissions; fragments fly
+outward and fade. Fusion: push a deuterium and tritium nucleus together
+against their mutual repulsion; close the gap far enough and they fuse into
+He-4 + a fast neutron (momentum-balanced recoil), releasing energy. Good for
+a direct side-by-side of "splitting a heavy nucleus" vs "joining two light
+nuclei" both releasing energy — the common misconception that fission and
+fusion are opposite in *mechanism* rather than just opposite in *which end
+of the mass curve they operate on*. The footer and energy bar are careful to
+get the actual numbers right: one fission releases far more energy than one
+fusion (~200 MeV vs ~18 MeV) — fusion only wins *per kilogram of fuel*,
+which is the reason it's confusing and worth spelling out explicitly.
 
 **Ionising Radiation & Safety** — a radioactive source fires α/β/γ down three
 lanes toward a detector, through a selectable shield (none/paper/aluminium/
-lead). Each type's pass-through probability is looked up per shield (paper
-stops α only; aluminium stops α+β; lead heavily attenuates but never fully
-stops γ) and a distance slider drives an inverse-square relative-dose
-readout. Good for the core radiation-safety objective — **time, distance,
+lead). Each particle type is drawn to match what it actually is, not just a
+coloured dot: α is a 2-proton + 2-neutron cluster (visibly the biggest), β a
+small electron sphere, γ a travelling sine-wave packet (it's an EM wave, not
+a particle with mass). α's real few-centimetre range in air is modelled
+directly — it fades out a short distance past the shield plane and never
+reaches the detector even with no shield selected, rather than sailing the
+full 8 m like β/γ. Each type's pass-through probability is looked up per
+shield (paper stops α only; aluminium stops α+β; lead heavily attenuates but
+never fully stops γ) and a distance slider drives an inverse-square
+relative-dose readout. Good for the core radiation-safety objective — **time, distance,
 shielding** — and for physically demonstrating why lead aprons/rooms target γ
 specifically rather than "radiation" as an undifferentiated hazard.
 
@@ -309,7 +322,8 @@ what changes; no individual bug "evolves."
 | Sim | Path | One-liner |
 |---|---|---|
 | Plum Pudding Model | `atomic-structure/plum-pudding-model.html` | Thomson's atom: electrons embedded in a ball of positive charge |
-| Rutherford Model | `atomic-structure/rutherford-model.html` | The gold foil experiment, plus a zoomed single-atom view |
+| Rutherford Experiment | `atomic-structure/rutherford-experiment.html` | The gold foil experiment, plus a zoomed single-atom view |
+| Rutherford Model | `atomic-structure/rutherford-model.html` | Electrons orbiting a nucleus at any radius — the planetary atom, and why it fails |
 | Bohr Model | `atomic-structure/bohr-model.html` | Electron shells/energy levels, with photon emission on de-excitation |
 
 **Plum Pudding Model** — a big translucent sphere of "positive charge"
@@ -320,7 +334,7 @@ establishes the historical baseline the next two sims overturn. Misconception
 it heads off: students often picture "planets around a sun" as the *first*
 atomic model; this shows that came later, and *why* (evidence-driven).
 
-**Rutherford Model** — two views via a segment control. "Gold foil
+**Rutherford Experiment** — two views via a segment control. "Gold foil
 experiment" fires a continuous stream of alpha particles at a plane of gold
 nuclei; most sail straight through empty space, a few (aimed close to a
 nucleus) deflect sharply or bounce back — this *is* the actual 1911
@@ -332,6 +346,18 @@ Pudding first, ask "what result would prove this wrong?", then run the foil
 experiment and let the deflection counter build the case live. Readouts
 (particles fired / deflected) make a nice "why is this evidence for a small
 dense nucleus" discussion prompt.
+
+**Rutherford Model** — the planetary atom that came *out of* that evidence:
+electrons orbit a small central nucleus at continuous, arbitrary radii and
+inclinations (no fixed shells yet), with a slider for how many electrons.
+Orbit speed follows Kepler's third law (closer orbits move faster), and a
+persistent on-screen note flags that even this exaggerated view understates
+the real scale — a true-to-scale nucleus would be ~10,000× smaller than the
+orbits and invisible. Good for stating the model's own fatal flaw out loud:
+classical EM says an accelerating (orbiting) charge radiates energy and
+should spiral into the nucleus in a fraction of a second, which real atoms
+demonstrably don't do. Pairs directly with Bohr Model as "here's the
+patch" — fixed shells forbid that spiral.
 
 **Bohr Model** — pick any of the first 20 elements; shells fill by the
 simplified 2-8-8 rule taught at this level, nucleus shows individual protons
