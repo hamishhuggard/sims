@@ -172,11 +172,13 @@ lerp`. Colour utils `lighten(hex,t)` / `shade(hex,f)` are global.
   (shift+drag, translates `eng.cam.target`), and zoom (wheel/pinch) are all
   wired automatically. Each frame: `eng.begin(W(),H())`, draw, `eng.flush(ctx)`
   (painter's-algorithm depth sort of everything buffered).
-- `eng.line(pts, {color, width, dash:[a,b], arrow, midArrow})` — polyline,
-  auto-split per segment for correct occlusion; widths scale with depth.
+- `eng.line(pts, {color, width, dash:[a,b], arrow, midArrow, depthOverride})` —
+  polyline, auto-split per segment for correct occlusion; widths scale with
+  depth. `depthOverride` (see the sphere note) forces every segment to sort at
+  one fixed depth.
 - `eng.arrow(from, to, {color, width, label})` — 3D arrow, optional big
   coloured label just past the head.
-- `eng.sphere(p, r, color, {stroke, strokeWidth, label, highlight})` —
+- `eng.sphere(p, r, color, {stroke, strokeWidth, label, highlight, depthOverride})` —
   shaded ball; `label` prints white text centred on it (use `'+'`, `'−'`).
   **Gotcha**: unless you pass `highlight` explicitly, it calls
   `lighten(color, 0.55)` to build the gradient's near side, and `lighten()`
@@ -194,6 +196,16 @@ lerp`. Colour utils `lighten(hex,t)` / `shade(hex,f)` are global.
 - Gotcha: everything is depth-sorted per primitive — huge translucent
   polygons vs many small spheres sorts fine in practice, but nudge with
   `depthBias`/`lift` if something hides.
+- Gotcha: a **composite object made of several primitives** (e.g. a bug =
+  shell sphere + head sphere + leg/antenna lines) will *flicker* — its parts
+  swap draw order as it moves, because each sorts on its own depth and the
+  sphere depth key is `centre − r`, so a big part always beats a small one
+  regardless of true position. Fix: project the object's centre once
+  (`eng.project(c).depth`) and pass that as `depthOverride` to **every** part.
+  The sort is stable, so the parts then layer purely by call order (draw
+  back-to-front yourself) and the whole object sorts as one unit against
+  everything else. Also give a big flat ground poly a large positive
+  `depthBias` so it can never sort in front of things resting on it.
 
 ### `lib/vessel.js` (chemistry only)
 

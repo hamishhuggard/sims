@@ -13,54 +13,117 @@
 <script>
 'use strict';
 const INK = '#1a1a2e';
-const LIGHT_COL = '#e7d8b1', DARK_COL = '#3f2e1f';
-const EATEN_COL = '#dc2626';
+const LIGHT_COL = '#e7d8b1', DARK_COL = '#3f2e1f';   // ground + bug camouflage trait
+const HEAD = '#2a2018', LEG = '#33281f';             // bug head / legs
+const BIRD_BODY = '#5b6b7a', BIRD_WING = '#39434f', BEAK = '#f2a71b';
+const PI2 = Math.PI * 2;
 
 function hexToRgb(h) { const m = h.replace('#', ''); return [parseInt(m.slice(0, 2), 16), parseInt(m.slice(2, 4), 16), parseInt(m.slice(4, 6), 16)]; }
 function rgbToHex(r, g, b) { return '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join(''); }
 function colorLerp(c0, c1, t) { const a = hexToRgb(c0), b = hexToRgb(c1); return rgbToHex(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t); }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function ease(t) { return t * t * (3 - 2 * t); }
 
-const N_POP = 50;
-const S = { background: 0.5, selection: 1.5, mutation: 0.06, running: false, showHistogram: true, showGraph: true, generation: 0 };
+const N_POP = 46;
+const S = { background: 0.5, selection: 1.5, mutation: 0.06, running: true, showHistogram: true, showGraph: true };
 
-let POP = [], history = [], eatenFlash = [], flashTimer = 0;
+let POP = [], birds = [], puffs = [], history = [];
+let eaten = 0, huntTimer = 0.6, sampleTimer = 0, lastT = 0;
 
+function mkBug(trait, grow) {
+  return { x: (Math.random() - 0.5) * 11, z: (Math.random() - 0.5) * 11, h: Math.random() * PI2, trait, phase: Math.random() * 6, grow: grow === undefined ? 1 : grow, dead: false, targeted: false };
+}
 function seedPopulation() {
   POP = [];
-  for (let i = 0; i < N_POP; i++) POP.push({ x: (Math.random() - 0.5) * 11, z: (Math.random() - 0.5) * 11, trait: Math.random() });
+  for (let i = 0; i < N_POP; i++) POP.push(mkBug(Math.random()));
+  birds = []; puffs = []; eaten = 0; huntTimer = 0.6; sampleTimer = 0;
   history = [avgTrait()];
-  S.generation = 0;
-  eatenFlash = []; flashTimer = 0;
 }
-function avgTrait() { return POP.reduce((s, p) => s + p.trait, 0) / POP.length; }
+function living() { return POP.filter(p => !p.dead); }
+function avgTrait() { const l = living(); return l.length ? l.reduce((s, p) => s + p.trait, 0) / l.length : 0; }
 
-function runGeneration() {
-  const bg = S.background, strength = S.selection;
-  const before = POP;
-  const survivors = before.filter(ind => {
-    const mismatch = Math.abs(ind.trait - bg);
-    const deathProb = Math.min(0.95, mismatch * strength);
-    return Math.random() > deathProb;
-  });
-  eatenFlash = before.filter(ind => survivors.indexOf(ind) === -1);
-  flashTimer = 1.1;
-  const pool = survivors.length >= 2 ? survivors : before; // avoid extinction crash
-  const next = [];
-  for (let i = 0; i < N_POP; i++) {
-    const parent = pool[Math.floor(Math.random() * pool.length)];
-    let trait = parent.trait + (Math.random() - 0.5) * S.mutation * 2;
-    trait = Math.max(0, Math.min(1, trait));
-    next.push({ x: (Math.random() - 0.5) * 11, z: (Math.random() - 0.5) * 11, trait });
+/* --- continuous ecosystem: birds spot the visible bugs, swoop, and always catch what they spotted --- */
+function spawnHunt(target) {
+  target.targeted = true;
+  birds.push({ target, tx: target.x, tz: target.z, ang: Math.random() * PI2, wing: Math.random() * 6, t: 0, dur: 1.1 + Math.random() * 0.35, struck: false, done: false });
+}
+
+function spawnBirth() {
+  const alive = living();
+  const pool = alive.length ? alive : POP;
+  const parent = pool[Math.floor(Math.random() * pool.length)];
+  let trait = parent ? parent.trait + (Math.random() - 0.5) * S.mutation * 2 : Math.random();
+  POP.push(mkBug(clamp(trait, 0, 1), 0));
+}
+
+function updateEcosystem(dt) {
+  // A bird scans the ground on a timer. It only launches at a bug it actually *spots* —
+  // and the more that bug stands out (mismatch × selection), the likelier it's seen. Once a
+  // bird commits, it always catches its target, so predation naturally slows as camouflage improves.
+  huntTimer -= dt;
+  if (S.selection > 0.05 && huntTimer <= 0) {
+    huntTimer = 0.3 * (0.6 + Math.random() * 0.8);
+    const alive = living().filter(b => !b.targeted);
+    if (alive.length) {
+      const cand = alive[Math.floor(Math.random() * alive.length)];
+      const m = Math.abs(cand.trait - S.background);
+      if (Math.random() < Math.min(0.97, m * S.selection)) spawnHunt(cand);
+    }
   }
-  POP = next;
-  S.generation++;
-  history.push(avgTrait());
-  if (history.length > 300) history.shift();
+
+  for (const b of birds) {
+    if (b.done) continue;
+    if (!b.struck && b.target && !b.target.dead) { b.tx = b.target.x; b.tz = b.target.z; }
+    b.t += dt;
+    b.wing += dt * 22;
+    const u = b.t / b.dur;
+    if (u >= 1) { b.done = true; continue; }
+    if (!b.struck && u >= 0.5) {
+      b.struck = true;
+      const tb = b.target;
+      if (tb && !tb.dead) { tb.dead = true; eaten++; spawnPuff(tb.x, tb.z); spawnBirth(); }  // eaten → a survivor breeds a replacement
+    }
+  }
+  birds = birds.filter(b => !b.done);
+  if (POP.some(b => b.dead)) POP = POP.filter(b => !b.dead);
+}
+
+function spawnPuff(x, z) { puffs.push({ x, z, t: 0 }); }
+function updatePuffs(dt) { for (const pf of puffs) pf.t += dt; puffs = puffs.filter(pf => pf.t < 0.45); }
+
+const BUG_SEP = 0.62;                    // keep bug bodies from overlapping
+function wander(dt) {
+  for (const p of POP) {
+    if (p.grow < 1) p.grow = Math.min(1, p.grow + dt * 3);
+    p.h += Math.sin((lastT + p.phase) * 0.7) * 0.6 * dt;
+    const sp = 0.35;
+    p.x += Math.cos(p.h) * sp * dt;
+    p.z += Math.sin(p.h) * sp * dt;
+  }
+  // pairwise separation — nudge any overlapping pair apart along their centre line
+  for (let i = 0; i < POP.length; i++) {
+    for (let j = i + 1; j < POP.length; j++) {
+      const a = POP[i], b = POP[j];
+      let dx = b.x - a.x, dz = b.z - a.z;
+      let d = Math.hypot(dx, dz);
+      if (d < BUG_SEP) {
+        if (d < 1e-3) { dx = Math.random() - 0.5; dz = Math.random() - 0.5; d = Math.hypot(dx, dz) || 1; }
+        const push = (BUG_SEP - d) / 2;
+        dx /= d; dz /= d;
+        a.x -= dx * push; a.z -= dz * push;
+        b.x += dx * push; b.z += dz * push;
+      }
+    }
+  }
+  for (const p of POP) {                  // keep them on the plane after wandering + separation
+    p.x = clamp(p.x, -5.5, 5.5);
+    p.z = clamp(p.z, -5.5, 5.5);
+  }
 }
 
 seedPopulation();
 
-const ui = SimUI({ back: '../index.html', title: 'Natural Selection & Evolution', subtitle: 'Peppered-moth-style camouflage selection — drag to orbit, scroll to zoom' });
+const ui = SimUI({ back: '../index.html', title: 'Natural Selection & Evolution', subtitle: 'Peppered-moth-style camouflage — birds eat the bugs that stand out. Drag to orbit, scroll to zoom' });
 
 const ge = ui.group('Environment');
 ui.slider(ge, 'Background darkness', { min: 0, max: 1, step: 0.05, value: 0.5, fmt: v => (v * 100).toFixed(0) + '%' }, v => S.background = v);
@@ -68,10 +131,10 @@ ui.slider(ge, 'Selection strength', { min: 0, max: 3, step: 0.1, value: 1.5, fmt
 ui.slider(ge, 'Mutation rate', { min: 0, max: 0.2, step: 0.01, value: 0.06, fmt: v => v.toFixed(2) }, v => S.mutation = v);
 
 const gr = ui.group('Run');
+function setPlayLabel() { runButtons.querySelectorAll('button')[0].textContent = S.running ? '⏸ Pause' : '▶ Play'; }
 const runButtons = ui.buttons(gr, [
-  { label: '▶ Run 1 generation', onClick: runGeneration },
-  { label: '⏯ Auto-run', onClick: () => { S.running = !S.running; runButtons.querySelectorAll('button')[1].textContent = S.running ? '⏸ Stop' : '⏯ Auto-run'; } },
-  { label: '⟲ Reset population', onClick: seedPopulation }
+  { label: '⏸ Pause', onClick: () => { S.running = !S.running; setPlayLabel(); } },
+  { label: '⟲ Reset population', onClick: () => { seedPopulation(); S.running = true; setPlayLabel(); } }
 ]);
 
 const gv = ui.group('Show / hide');
@@ -79,57 +142,131 @@ ui.toggle(gv, 'Trait histogram', true, v => S.showHistogram = v);
 ui.toggle(gv, 'Average-trait graph', true, v => S.showGraph = v);
 
 const gd = ui.group('Readings');
-const roGen = ui.readout(gd, 'Generation', '0');
 const roAvg = ui.readout(gd, 'Population avg. colour', '');
+const roPop = ui.readout(gd, 'Living bugs', String(N_POP));
+const roEaten = ui.readout(gd, 'Bugs eaten', '0');
 
-const foot = ui.footer('');
+const foot = ui.footer('Birds spot the bugs that <b>stand out against the ground</b> and eat them; the survivors keep breeding, so the population steadily drifts toward camouflage.');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
 
 const { canvas, ctx, W, H } = SimCanvas();
 const eng = Engine3D(canvas, { dist: 16, yaw: 0.5, pitch: 0.65 });
 
-let lastT = 0, autoAccum = 0;
+/* --- a ladybug/beetle assembled from engine primitives --- */
+function drawBug(b) {
+  const s = ease(b.grow);
+  if (s <= 0.02) return;
+  const cx = b.x, cz = b.z, h = b.h;
+  const fwd = [Math.cos(h), 0, Math.sin(h)], side = [-Math.sin(h), 0, Math.cos(h)];
+  const shell = colorLerp(LIGHT_COL, DARK_COL, b.trait);
+  const bodyR = 0.27 * s, cy = 0.20 * s;
+  const walk = lastT * 6 + b.phase;
+  // All of one bug's parts share the body-centre depth (D). With the engine's stable
+  // depth sort they then layer purely by draw order (legs → shell → head → seam → antennae)
+  // and the whole bug sorts as a single unit against other bugs — no per-part flicker.
+  const D = eng.project([cx, cy, cz]).depth;
+  // legs (drawn first, tucked under the body); note draw order = layering (see D above)
+  for (let li = -1; li <= 1; li++) {
+    for (const sgn of [-1, 1]) {
+      const bob = Math.max(0, Math.sin(walk + li * 2 + (sgn > 0 ? Math.PI : 0)) * 0.03 * s);
+      const hip = v3.add(v3.add([cx, 0.14 * s, cz], v3.mul(fwd, li * 0.14 * s)), v3.mul(side, sgn * 0.12 * s));
+      const foot = v3.add(v3.add(v3.add([cx, 0, cz], v3.mul(fwd, li * 0.18 * s + 0.02 * s)), v3.mul(side, sgn * 0.30 * s)), [0, bob, 0]);
+      eng.line([hip, foot], { color: LEG, width: 1.6, depthOverride: D });
+    }
+  }
+  // domed shell + head
+  eng.sphere([cx, cy, cz], bodyR, shell, { stroke: INK, strokeWidth: 1, depthOverride: D });
+  const headP = v3.add([cx, 0.16 * s, cz], v3.mul(fwd, 0.26 * s));
+  eng.sphere(headP, 0.12 * s, HEAD, { stroke: INK, strokeWidth: 0.8, depthOverride: D });
+}
+
+/* --- a swooping bird assembled from engine primitives --- */
+function drawBird(p, fwd, wing) {
+  const side = [-fwd[2], 0, fwd[0]];                 // fwd is horizontal; side perpendicular
+  const flap = Math.sin(wing) * 0.55;
+  const tailBase = v3.add(p, v3.mul(fwd, -0.18));
+  eng.poly([tailBase,
+    v3.add(v3.add(tailBase, v3.mul(fwd, -0.4)), v3.mul(side, 0.16)),
+    v3.add(v3.add(tailBase, v3.mul(fwd, -0.4)), v3.mul(side, -0.16))], BIRD_WING, { stroke: INK, strokeWidth: 1.2 });
+  eng.sphere(p, 0.24, BIRD_BODY, { stroke: INK, strokeWidth: 1.2 });
+  const head = v3.add(p, v3.mul(fwd, 0.30));
+  eng.sphere(head, 0.15, lighten(BIRD_BODY, 0.12), { stroke: INK, strokeWidth: 1 });
+  const beakTip = v3.add(head, v3.mul(fwd, 0.26));
+  eng.poly([beakTip,
+    v3.add(v3.add(head, v3.mul(fwd, 0.1)), v3.mul(side, 0.06)),
+    v3.add(v3.add(head, v3.mul(fwd, 0.1)), v3.mul(side, -0.06))], BEAK, { stroke: INK, strokeWidth: 1 });
+  for (const sgn of [-1, 1]) {
+    const sh1 = v3.add(v3.add(p, v3.mul(fwd, 0.12)), v3.mul(side, sgn * 0.1));
+    const sh2 = v3.add(v3.add(p, v3.mul(fwd, -0.18)), v3.mul(side, sgn * 0.1));
+    const tip1 = v3.add(v3.add(v3.add(p, v3.mul(fwd, 0.20)), v3.mul(side, sgn * 0.92)), [0, flap, 0]);
+    const tip2 = v3.add(v3.add(v3.add(p, v3.mul(fwd, -0.12)), v3.mul(side, sgn * 0.92)), [0, flap, 0]);
+    eng.poly([sh1, tip1, tip2, sh2], sgn > 0 ? BIRD_WING : shade(BIRD_WING, 0.88), { stroke: INK, strokeWidth: 1.2 });
+  }
+}
+
+function birdPos(b, u) {
+  const dx = Math.cos(b.ang) * 4.2, dz = Math.sin(b.ang) * 4.2;
+  const HY = 4.6, SY = 0.62;
+  let p;
+  if (u < 0.5) { const e = ease(u / 0.5); p = [b.tx + dx * (1 - e), HY + (SY - HY) * e, b.tz + dz * (1 - e)]; }
+  else { const e = ease((u - 0.5) / 0.5); p = [b.tx - dx * e, SY + (HY - SY) * e, b.tz - dz * e]; }
+  return { p, fwd: v3.norm([-dx, 0, -dz]) };
+}
+
+function drawPuffs() {
+  for (const pf of puffs) {
+    const k = pf.t / 0.45, a = (1 - k) * 0.7;
+    const col = 'rgba(120,110,100,' + a.toFixed(2) + ')';
+    for (let i = 0; i < 5; i++) {
+      const ang = i / 5 * PI2, rr = 0.15 + k * 0.4;
+      eng.sphere([pf.x + Math.cos(ang) * rr, 0.3 + k * 0.5, pf.z + Math.sin(ang) * rr], 0.06 * (1 - k) + 0.02, col, { highlight: col });
+    }
+  }
+}
 
 function frame(tms) {
   const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
 
   if (S.running) {
-    autoAccum += dt;
-    if (autoAccum > 0.55) { autoAccum = 0; runGeneration(); }
+    updateEcosystem(dt);
+    wander(dt);
+    updatePuffs(dt);
+    sampleTimer += dt;
+    if (sampleTimer >= 0.4) { sampleTimer = 0; history.push(avgTrait()); if (history.length > 240) history.shift(); }
   }
-  if (flashTimer > 0) flashTimer = Math.max(0, flashTimer - dt);
 
   ctx.clearRect(0, 0, W(), H());
   eng.begin(W(), H());
 
   const groundCol = colorLerp(LIGHT_COL, DARK_COL, S.background);
-  const p00 = [-6, 0, -6], p10 = [6, 0, -6], p11 = [6, 0, 6], p01 = [-6, 0, 6];
-  eng.poly([p00, p10, p11, p01], groundCol, { stroke: INK, strokeWidth: 2 });
+  // depthBias forces the whole ground plane behind every bug — without it the painter's-algorithm
+  // sort (one depth per primitive, at the plane's centre) lets far-side bugs vanish under the ground.
+  eng.poly([[-6, 0, -6], [6, 0, -6], [6, 0, 6], [-6, 0, 6]], groundCol, { stroke: INK, strokeWidth: 2, depthBias: 100 });
 
-  for (const ind of POP) {
-    const col = colorLerp(LIGHT_COL, DARK_COL, ind.trait);
-    eng.sphere([ind.x, 0.22, ind.z], 0.22, col, { stroke: INK, strokeWidth: 1 });
-  }
-  if (flashTimer > 0) {
-    const a = flashTimer / 1.1;
-    const flashCol = 'rgba(220,38,38,' + a.toFixed(2) + ')';
-    for (const ind of eatenFlash) {
-      eng.sphere([ind.x, 0.5, ind.z], 0.16, flashCol, { highlight: flashCol, stroke: INK, strokeWidth: 1 });
-    }
+  for (const b of POP) drawBug(b);
+
+  for (const b of birds) {
+    const u = b.t / b.dur;
+    if (u < 0 || u >= 1) continue;
+    const { p, fwd } = birdPos(b, u);
+    drawBird(p, fwd, b.wing);
   }
 
+  drawPuffs();
   eng.flush(ctx);
 
   if (S.showHistogram) drawHistogram();
   if (S.showGraph) drawGraph();
 
-  roGen.set(String(S.generation));
   roAvg.set((avgTrait() * 100).toFixed(0) + '% dark');
-  foot.set('Individuals whose colour <b>mismatches the background</b> are more likely to be eaten before reproducing &mdash; survivors pass on their genes, shifting the population\'s average colour toward camouflage over generations.');
+  roPop.set(String(living().length));
+  roEaten.set(String(eaten));
 
   requestAnimationFrame(frame);
 }
 
+/* --- 2D overlays, bottom-left, stacked and clear of the footer/hint strip --- */
+const BM = 48;                          // bottom margin reserved for the hint line
 function panelBox(x, y, w, h) {
   ctx.fillStyle = 'rgba(255,255,255,0.94)';
   ctx.strokeStyle = INK; ctx.lineWidth = 3;
@@ -138,52 +275,52 @@ function panelBox(x, y, w, h) {
   ctx.fill(); ctx.stroke();
 }
 
-function drawHistogram() {
-  const gw = Math.min(360, W() * 0.35), gh = 110;
-  const gx = 20, gy = H() - 150 - 20 - gh - 10;
-  panelBox(gx, gy, gw, gh);
-  const bins = 10;
-  const counts = new Array(bins).fill(0);
-  POP.forEach(p => { const b = Math.min(bins - 1, Math.floor(p.trait * bins)); counts[b]++; });
-  const maxC = Math.max(1, ...counts);
-  const mx = gx + 14, my = gy + 22, mw = gw - 28, mh = gh - 38;
-  Draw.label(ctx, 'population colour distribution', gx + gw / 2, gy + 12, { size: 12, color: '#475569' });
-  const bw = mw / bins;
-  for (let i = 0; i < bins; i++) {
-    const h = (counts[i] / maxC) * mh;
-    ctx.fillStyle = colorLerp(LIGHT_COL, DARK_COL, (i + 0.5) / bins);
-    ctx.strokeStyle = INK; ctx.lineWidth = 1.5;
-    ctx.fillRect(mx + i * bw + 2, my + mh - h, bw - 4, Math.max(h, 1));
-    ctx.strokeRect(mx + i * bw + 2, my + mh - h, bw - 4, Math.max(h, 1));
-  }
-}
-
 function drawGraph() {
-  const gw = Math.min(360, W() * 0.35), gh = 150;
-  const gx = 20, gy = H() - gh - 20;
+  const gw = Math.min(300, W() * 0.3), gh = 132;
+  const gx = 20, gy = H() - BM - gh;
   panelBox(gx, gy, gw, gh);
-  const mx = gx + 40, mw = gw - 54, my = gy + 12, mh = gh - 44;
+  const mx = gx + 46, mw = gw - 62, my = gy + 26, mh = gh - 52;
+  Draw.label(ctx, 'average colour over time', gx + gw / 2, gy + 13, { size: 12.5, color: '#475569' });
   ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.lineTo(mx + mw, my + mh); ctx.stroke();
-  Draw.label(ctx, 'avg colour', gx + 20, my - 2, { size: 12, color: '#475569', align: 'left' });
-  Draw.label(ctx, 'dark', mx - 14, my + 4, { size: 11, color: '#475569', align: 'right' });
-  Draw.label(ctx, 'light', mx - 14, my + mh - 4, { size: 11, color: '#475569', align: 'right' });
-  Draw.label(ctx, 'generation →', mx + mw - 40, my + mh + 16, { size: 12, color: '#475569' });
-  // background-target line
+  Draw.label(ctx, 'dark', mx - 16, my + 5, { size: 11, color: '#475569', align: 'right' });
+  Draw.label(ctx, 'light', mx - 16, my + mh - 5, { size: 11, color: '#475569', align: 'right' });
+  Draw.label(ctx, 'time →', mx + mw - 26, my + mh + 15, { size: 11.5, color: '#475569' });
   const bgY = my + (1 - S.background) * mh;
   ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
   ctx.beginPath(); ctx.moveTo(mx, bgY); ctx.lineTo(mx + mw, bgY); ctx.stroke();
   ctx.setLineDash([]);
+  Draw.label(ctx, 'background', mx + mw - 6, bgY - 9, { size: 10.5, color: '#94a3b8', align: 'right' });
   ctx.strokeStyle = '#7c3aed'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
   ctx.beginPath();
-  const span = 60;
-  const start = Math.max(0, history.length - span);
-  history.slice(start).forEach((v, i) => {
-    const x = mx + (i / Math.max(1, span - 1)) * mw;
+  const n = history.length;
+  history.forEach((v, i) => {
+    const x = mx + (n <= 1 ? 0 : (i / (n - 1)) * mw);
     const y = my + (1 - v) * mh;
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   });
   ctx.stroke();
+}
+
+function drawHistogram() {
+  const gw = Math.min(300, W() * 0.3), gh = 100;
+  const graphSlot = S.showGraph ? 132 + 12 : 0;
+  const gx = 20, gy = H() - BM - graphSlot - gh;
+  panelBox(gx, gy, gw, gh);
+  const bins = 10;
+  const counts = new Array(bins).fill(0);
+  living().forEach(p => { const b = Math.min(bins - 1, Math.floor(p.trait * bins)); counts[b]++; });
+  const maxC = Math.max(1, ...counts);
+  const mx = gx + 16, my = gy + 24, mw = gw - 32, mh = gh - 40;
+  Draw.label(ctx, 'colour distribution', gx + gw / 2, gy + 13, { size: 12.5, color: '#475569' });
+  const bw = mw / bins;
+  for (let i = 0; i < bins; i++) {
+    const bh = (counts[i] / maxC) * mh;
+    ctx.fillStyle = colorLerp(LIGHT_COL, DARK_COL, (i + 0.5) / bins);
+    ctx.strokeStyle = INK; ctx.lineWidth = 1.5;
+    ctx.fillRect(mx + i * bw + 2, my + mh - bh, bw - 4, Math.max(bh, 1));
+    ctx.strokeRect(mx + i * bw + 2, my + mh - bh, bw - 4, Math.max(bh, 1));
+  }
 }
 
 window.BOOT_DONE = true;
