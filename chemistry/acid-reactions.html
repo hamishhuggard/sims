@@ -8,28 +8,57 @@
 </head>
 <body>
 <canvas id="sim"></canvas>
+<script src="../lib/theme.js"></script>
 <script src="../lib/ui.js"></script>
 <script src="../lib/engine3d.js"></script>
 <script src="../lib/vessel.js"></script>
 <script>
 'use strict';
 const INK = '#1a1a2e';
+const H_COL = '#e63946', O_COL = '#ef4444';
+const CATION_GREY = '#94a3b8', CATION_CU = '#3b82f6';
 
-const ACIDS = {
-  HCl: { name: 'hydrochloric acid', formula: 'HCl', suffix: 'chloride' },
-  H2SO4: { name: 'sulfuric acid', formula: 'H₂SO₄', suffix: 'sulfate' },
-  HNO3: { name: 'nitric acid', formula: 'HNO₃', suffix: 'nitrate' }
+/* ball-and-stick anion models for "molecule models" mode (local +x = heading) */
+const MOL_SULFATE = {
+  atoms: [
+    { d: [0, 0, 0], r: 0.06, color: '#eab308', label: '2−' },
+    { d: [0.058, 0.058, 0.058], r: 0.045, color: O_COL },
+    { d: [0.058, -0.058, -0.058], r: 0.045, color: O_COL },
+    { d: [-0.058, 0.058, -0.058], r: 0.045, color: O_COL },
+    { d: [-0.058, -0.058, 0.058], r: 0.045, color: O_COL }
+  ],
+  bonds: [[0, 1], [0, 2], [0, 3], [0, 4]], bondColor: '#a16207', bondW: 2
+};
+const MOL_NITRATE = {
+  atoms: [
+    { d: [0, 0, 0], r: 0.055, color: '#60a5fa', label: '−' },
+    { d: [0.095, 0, 0], r: 0.045, color: O_COL },
+    { d: [-0.0475, 0.0823, 0], r: 0.045, color: O_COL },
+    { d: [-0.0475, -0.0823, 0], r: 0.045, color: O_COL }
+  ],
+  bonds: [[0, 1], [0, 2], [0, 3]], bondColor: '#3b82f6', bondW: 2
 };
 
-/* reactant data: type drives gas/bubbles/solid shape; colour is the solid's colour */
+const ACIDS = {
+  HCl: { name: 'hydrochloric acid', formula: 'HCl', suffix: 'chloride',
+    anion: { label: 'Cl⁻', color: '#86efac' } },
+  H2SO4: { name: 'sulfuric acid', formula: 'H₂SO₄', suffix: 'sulfate',
+    anion: { label: 'SO₄²⁻', color: '#f59e0b', mol: MOL_SULFATE } },
+  HNO3: { name: 'nitric acid', formula: 'HNO₃', suffix: 'nitrate',
+    anion: { label: 'NO₃⁻', color: '#818cf8', mol: MOL_NITRATE } }
+};
+
+/* reactant data: type drives gas/bubbles/solid shape; colour is the solid's
+   colour; dur is roughly how long (s) until the solid is used up; ion is the
+   cation released into solution as the reaction proceeds */
 const REACTANTS = {
-  Mg: { name: 'magnesium', cation: 'magnesium', type: 'metal', gas: 'H2', colour: '#cbd5e1', rate: 0.12 },
-  Zn: { name: 'zinc', cation: 'zinc', type: 'metal', gas: 'H2', colour: '#9ca3af', rate: 0.35 },
+  Mg: { name: 'magnesium', cation: 'magnesium', type: 'metal', gas: 'H2', colour: '#cbd5e1', rate: 0.12, dur: 20, ion: { label: 'Mg²⁺', charge: '2+', color: CATION_GREY } },
+  Zn: { name: 'zinc', cation: 'zinc', type: 'metal', gas: 'H2', colour: '#9ca3af', rate: 0.35, dur: 35, ion: { label: 'Zn²⁺', charge: '2+', color: CATION_GREY } },
   Cu: { name: 'copper', type: 'none', colour: '#b45309' },
-  CaCO3: { name: 'calcium carbonate', cation: 'calcium', type: 'carbonate', gas: 'CO2', colour: '#f8fafc', rate: 0.2 },
-  CuCO3: { name: 'copper carbonate', cation: 'copper', type: 'carbonate', gas: 'CO2', colour: '#4ade80', rate: 0.2 },
-  NaOH: { name: 'sodium hydroxide', cation: 'sodium', type: 'base', colour: '#f1f5f9' },
-  CuO: { name: 'copper oxide', cation: 'copper', type: 'oxide', colour: '#1e293b' }
+  CaCO3: { name: 'calcium carbonate', cation: 'calcium', type: 'carbonate', gas: 'CO2', colour: '#f8fafc', rate: 0.2, dur: 28, ion: { label: 'Ca²⁺', charge: '2+', color: CATION_GREY } },
+  CuCO3: { name: 'copper carbonate', cation: 'copper', type: 'carbonate', gas: 'CO2', colour: '#4ade80', rate: 0.2, dur: 28, ion: { label: 'Cu²⁺', charge: '2+', color: CATION_CU } },
+  NaOH: { name: 'sodium hydroxide', cation: 'sodium', type: 'base', colour: '#f1f5f9', dur: 10, ion: { label: 'Na⁺', charge: '+', color: CATION_GREY } },
+  CuO: { name: 'copper oxide', cation: 'copper', type: 'oxide', colour: '#1e293b', dur: 22, ion: { label: 'Cu²⁺', charge: '2+', color: CATION_CU } }
 };
 
 const GAS_NAME = { H2: 'hydrogen', CO2: 'carbon dioxide' };
@@ -62,6 +91,7 @@ function reactionInfo() {
 const S = {
   acid: 'HCl', reactant: 'Mg',
   showBubbles: true, showLabels: true, showWordEq: true, showSymbolEq: true,
+  showIons: true, labelledIons: false,
   test: null // { type: 'splint'|'limewater', t0 }
 };
 
@@ -72,7 +102,7 @@ ui.segment(ga, null, [
   { value: 'HCl', label: 'Hydrochloric (HCl)' },
   { value: 'H2SO4', label: 'Sulfuric (H₂SO₄)' },
   { value: 'HNO3', label: 'Nitric (HNO₃)' }
-], 'HCl', v => { S.acid = v; });
+], 'HCl', v => { S.acid = v; reset(); });
 
 const gr = ui.group('Add to it');
 ui.segment(gr, null, [
@@ -83,13 +113,18 @@ ui.segment(gr, null, [
   { value: 'CuCO3', label: 'Copper carbonate' },
   { value: 'NaOH', label: 'Sodium hydroxide' },
   { value: 'CuO', label: 'Copper oxide' }
-], 'Mg', v => { S.reactant = v; colourT = 0; });
+], 'Mg', v => { S.reactant = v; reset(); });
+ui.buttons(gr, [{ label: '⟲ Reset reaction', onClick: reset }]);
 
 const gt = ui.group('Gas tests');
 ui.buttons(gt, [
   { label: '🔥 Test gas with lit splint', onClick: () => { S.test = { type: 'splint', t0: simT }; } },
   { label: '🥛 Bubble through limewater', onClick: () => { S.test = { type: 'limewater', t0: simT }; } }
 ]);
+
+const gp = ui.group('Particles');
+ui.toggle(gp, 'Ions in solution', true, v => S.showIons = v);
+ui.toggle(gp, 'Labelled spheres (vs molecule models)', false, v => S.labelledIons = v);
 
 const gv = ui.group('Show / hide');
 ui.toggle(gv, 'Bubbles', true, v => S.showBubbles = v);
@@ -100,6 +135,7 @@ ui.toggle(gv, 'Symbol equation', true, v => S.showSymbolEq = v);
 const gRead = ui.group('Readings');
 const roSalt = ui.readout(gRead, 'Salt made', '');
 const roGas = ui.readout(gRead, 'Gas made', '');
+const roProg = ui.readout(gRead, 'Progress', '—');
 
 const foot = ui.footer('');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
@@ -110,11 +146,18 @@ const eng = Engine3D(canvas, { dist: 11, yaw: 0.5, pitch: 0.28 });
 const TUBE = { x: 0, z: 0, r: 0.9, y0: -2, y1: 2, level: 0.5 };
 const LIME = { x: 2.2, z: 0, r: 0.55, y0: -1.3, y1: 0.7, level: 0.35 };
 
+const swarm = ParticleSwarm({ r: TUBE.r * 0.82, y0: TUBE.y0 + 0.15, y1: TUBE.level - 0.08 });
+
 let bubbles = [];
 let bubbleTimer = 0;
-let colourT = 0;
+let extent = 0; // 0..1 reaction progress — solid shrinks, H⁺ used up, salt ions appear
 let simT = 0, lastT = 0;
 let limeMilky = 0; // 0..1
+
+function reset() {
+  extent = 0;
+  bubbles.length = 0;
+}
 
 function solidColour(r) { return r.colour; }
 
@@ -139,13 +182,17 @@ function frame(tms) {
 
   const r = REACTANTS[S.reactant];
   const info = reactionInfo();
+  const reacting = r.type !== 'none';
 
-  /* bubble spawn/step */
-  if (S.showBubbles && r.rate) {
+  /* reaction progress: solid dissolves over ~dur seconds */
+  if (reacting && r.dur) extent = Math.min(1, extent + dt / r.dur);
+
+  /* bubble spawn/step — bubbling slows and stops as the solid runs out */
+  if (S.showBubbles && r.rate && extent < 1) {
     bubbleTimer -= dt;
     if (bubbleTimer <= 0) {
       bubbles.push({ x: (Math.random() - 0.5) * 0.5, z: (Math.random() - 0.5) * 0.5, y: TUBE.y0 + 0.35, r: 0.06 + Math.random() * 0.06 });
-      bubbleTimer = r.rate;
+      bubbleTimer = r.rate / Math.max(0.15, 1 - extent);
     }
   }
   for (let i = bubbles.length - 1; i >= 0; i--) {
@@ -155,9 +202,15 @@ function frame(tms) {
   }
   if (!S.showBubbles) bubbles.length = 0;
 
-  /* solution colour ramps toward the reaction's target */
-  if (r.cation === 'copper') colourT = Math.min(1, colourT + dt / 2.5);
-  const liquidColour = lerpColour('rgba(210,225,235,0.3)', targetLiquidColour(), colourT);
+  /* solution colour ramps toward the reaction's target as it proceeds */
+  const liquidColour = lerpColour('rgba(210,225,235,0.3)', targetLiquidColour(), extent);
+
+  /* ions in solution: H⁺ used up, spectator anions constant, cations appear */
+  const nH = Math.round(14 - (reacting ? 9 * extent : 0));
+  swarm.want('H+', { n: S.showIons ? nH : 0, radius: 0.07, speed: 0.8 });
+  swarm.want('anion', { n: S.showIons ? 10 : 0, radius: 0.09, speed: 0.55 });
+  swarm.want('cation', { n: S.showIons && reacting ? Math.round(8 * extent) : 0, radius: 0.08, speed: 0.55 });
+  swarm.step(dt);
 
   /* limewater milkiness while a limewater test with CO2 is running */
   const testActive = S.test && (simT - S.test.t0 < 3);
@@ -183,17 +236,23 @@ function frame(tms) {
   /* main test tube */
   drawBeaker(eng, { x: TUBE.x, z: TUBE.z, r: TUBE.r, y0: TUBE.y0, y1: TUBE.y1, level: TUBE.level, liquid: liquidColour });
 
-  /* solid in the tube */
-  if (r.type === 'metal') {
-    eng.box([0, TUBE.y0 + 0.9, 0], 0.14, 1.1, 0.04, solidColour(r), { stroke: INK, strokeWidth: 1.5 });
-  } else if (r.type === 'carbonate' || r.type === 'oxide' || r.type === 'base') {
-    for (let i = 0; i < 7; i++) {
+  /* solid in the tube — shrinks away as the reaction proceeds */
+  if (r.type === 'metal' && extent < 0.995) {
+    const hy = 1.05 * (1 - extent) + 0.02;
+    eng.box([0, TUBE.y0 + 0.1 + hy, 0], 0.14, hy, 0.04, solidColour(r), { stroke: INK, strokeWidth: 1.5 });
+  } else if ((r.type === 'carbonate' || r.type === 'oxide' || r.type === 'base') && extent < 0.995) {
+    const n = Math.ceil(7 * (1 - extent));
+    const pr = 0.14 * (1 - 0.5 * extent);
+    for (let i = 0; i < n; i++) {
       const a = (i / 7) * Math.PI * 2;
-      eng.sphere([Math.cos(a) * 0.35, TUBE.y0 + 0.15, Math.sin(a) * 0.35], 0.14, solidColour(r), { stroke: INK, strokeWidth: 1 });
+      eng.sphere([Math.cos(a) * 0.35, TUBE.y0 + pr + 0.02, Math.sin(a) * 0.35], pr, solidColour(r), { stroke: INK, strokeWidth: 1 });
     }
   } else if (r.type === 'none') {
     eng.box([0, TUBE.y0 + 0.5, 0], 0.16, 0.5, 0.05, solidColour(r), { stroke: INK, strokeWidth: 1.5 });
   }
+
+  /* dissolved ions */
+  if (S.showIons) drawIons(r);
 
   /* rising bubbles */
   for (const b of bubbles) eng.sphere([b.x, b.y, b.z], b.r, 'rgba(255,255,255,0.15)', { stroke: 'rgba(148,163,184,0.9)', strokeWidth: 2, highlight: 'rgba(255,255,255,0.4)' });
@@ -226,13 +285,38 @@ function frame(tms) {
 
   roSalt.set(info.salt);
   roGas.set(info.gas);
+  roProg.set(reacting ? Math.round(extent * 100) + '%' : '—');
 
   let footHtml = '';
   if (S.showWordEq) footHtml += info.word;
   if (S.showSymbolEq) footHtml += (footHtml ? ' &nbsp;·&nbsp; ' : '') + '<b>' + SYMBOL[S.reactant][S.acid] + '</b>';
+  if (reacting && extent >= 1) footHtml += ' &nbsp;·&nbsp; <b>reaction complete</b> — the solid has been used up';
   foot.set(footHtml);
 
   requestAnimationFrame(frame);
+}
+
+/* dissolved ions: labelled spheres or ball-and-stick models */
+function drawIons(r) {
+  const anion = ACIDS[S.acid].anion;
+  const ionStroke = { stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1 };
+  for (const pt of swarm.list('H+')) {
+    if (S.labelledIons) eng.sphere(pt.p, 0.09, H_COL, S.showLabels ? Object.assign({ label: 'H⁺' }, ionStroke) : {});
+    else eng.sphere(pt.p, 0.02, H_COL, S.showLabels ? Object.assign({ label: '+' }, ionStroke) : {});
+  }
+  for (const pt of swarm.list('anion')) {
+    if (!S.labelledIons && anion.mol) {
+      drawMolecule(eng, pt.p, pt.v, anion.mol, { showLabels: S.showLabels });
+    } else {
+      eng.sphere(pt.p, 0.09, anion.color, S.showLabels ? Object.assign({ label: S.labelledIons ? anion.label : '−' }, ionStroke) : {});
+    }
+  }
+  if (r.ion) {
+    for (const pt of swarm.list('cation')) {
+      eng.sphere(pt.p, S.labelledIons ? 0.1 : 0.06, r.ion.color,
+        S.showLabels ? Object.assign({ label: S.labelledIons ? r.ion.label : r.ion.charge }, ionStroke) : {});
+    }
+  }
 }
 
 window.BOOT_DONE = true;

@@ -8,17 +8,39 @@
 </head>
 <body>
 <canvas id="sim"></canvas>
+<script src="../lib/theme.js"></script>
 <script src="../lib/ui.js"></script>
 <script src="../lib/engine3d.js"></script>
+<script src="../lib/vessel.js"></script>
 <script>
 'use strict';
 const INK = '#1a1a2e';
+const O_COL = '#ef4444', C_COL = '#334155';
 
-/* horizontal unit vector perpendicular to the camera direction (inlined
-   from lib/vessel.js — this page doesn't load vessel.js) */
-function sideVec(eng) {
-  return [-Math.cos(eng.cam.yaw), 0, Math.sin(eng.cam.yaw)];
-}
+/* ball-and-stick product molecules for "molecule models" mode:
+   linear O=C=O, bent H–O–H, diatomic C≡O */
+const MOL = {
+  CO2: {
+    atoms: [
+      { d: [0, 0, 0], r: 0.085, color: C_COL },
+      { d: [0.16, 0, 0], r: 0.07, color: O_COL },
+      { d: [-0.16, 0, 0], r: 0.07, color: O_COL }
+    ], bonds: [[0, 1], [0, 2]], bondColor: '#475569', bondW: 3
+  },
+  H2O: {
+    atoms: [
+      { d: [0, 0, 0], r: 0.075, color: O_COL },
+      { d: [0.068, 0.088, 0], r: 0.045, color: '#f1f5f9' },
+      { d: [0.068, -0.088, 0], r: 0.045, color: '#f1f5f9' }
+    ], bonds: [[0, 1], [0, 2]], bondColor: '#94a3b8', bondW: 2.5
+  },
+  CO: {
+    atoms: [
+      { d: [-0.07, 0, 0], r: 0.085, color: C_COL },
+      { d: [0.09, 0, 0], r: 0.07, color: O_COL }
+    ], bonds: [[0, 1]], bondColor: '#ea580c', bondW: 3
+  }
+};
 
 const FUELS = {
   methane: { name: 'methane', symbol: 'CH₄ + 2O₂ → CO₂ + 2H₂O' },
@@ -29,7 +51,8 @@ const FUELS = {
 
 const S = {
   fuel: 'methane', air: 80,
-  showMolecules: true, showSoot: true, labels: true, showEnergyBar: true
+  showMolecules: true, showSoot: true, labels: true, showEnergyBar: true,
+  labelledMols: false // false = ball-and-stick models; true = big labelled spheres
 };
 
 const ui = SimUI({ back: '../index.html', title: 'Combustion', subtitle: 'Complete vs incomplete combustion — drag to orbit, scroll to zoom' });
@@ -44,6 +67,9 @@ ui.segment(gf, null, [
 
 const ga = ui.group('Air / oxygen supply');
 ui.slider(ga, 'Bunsen collar', { min: 0, max: 100, step: 1, value: 80, fmt: v => Math.round(v) + '%' }, v => S.air = v);
+
+const gp = ui.group('Particles');
+ui.toggle(gp, 'Labelled spheres (vs molecule models)', false, v => S.labelledMols = v);
 
 const gv = ui.group('Show / hide');
 ui.toggle(gv, 'Product molecules', true, v => S.showMolecules = v);
@@ -164,10 +190,18 @@ function frame(tms) {
     }
   }
 
-  /* product molecules */
+  /* product molecules — shrink away as they fade out */
   for (const m of molecules) {
     const alpha = Math.max(0, Math.min(1, m.life / m.maxLife));
-    eng.sphere([m.x, m.y, m.z], 0.13, m.color, { highlight: m.color, label: S.labels ? m.label : '' });
+    const sc = 0.55 + 0.45 * alpha;
+    if (S.labelledMols) {
+      eng.sphere([m.x, m.y, m.z], 0.13 * sc, m.color, { highlight: m.color, label: S.labels ? m.label : '' });
+    } else {
+      const a = m.spinA + simT * m.spinW;
+      const c = Math.sqrt(1 - m.tilt * m.tilt);
+      drawMolecule(eng, [m.x, m.y, m.z], [Math.cos(a) * c, m.tilt, Math.sin(a) * c], MOL[m.type], { scale: sc });
+      if (S.labels && alpha > 0.5) eng.label([m.x, m.y + 0.24, m.z], m.label, { color: '#64748b', size: 12, lift: 1 });
+    }
   }
 
   if (S.labels) eng.label([0, -1.75, 1.0], FUELS[S.fuel].name + ' burner', { color: '#475569', size: 15, lift: 2 });
@@ -198,7 +232,11 @@ function spawn(type, color, label) {
   const a = Math.random() * Math.PI * 2, r = Math.random() * 0.12;
   molecules.push({
     x: Math.cos(a) * r, y: TIP_Y + 0.3, z: Math.sin(a) * r,
-    vy: 0.5 + Math.random() * 0.3, life: 2.2, maxLife: 2.2, color, label
+    vy: 0.5 + Math.random() * 0.3, life: 2.2, maxLife: 2.2, color, label, type,
+    // random tumble for the ball-and-stick model: yaw phase/speed + fixed tilt
+    spinA: Math.random() * Math.PI * 2,
+    spinW: (1 + Math.random() * 2) * (Math.random() < 0.5 ? -1 : 1),
+    tilt: (Math.random() - 0.5) * 1.4
   });
 }
 

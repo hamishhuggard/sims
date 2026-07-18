@@ -12,7 +12,8 @@ files opened over `python3 -m http.server`, nothing to install.
 
 ```
 sims/ (repo root)
-  lib/ui.js, lib/engine3d.js, lib/vessel.js   — shared engine, frozen unless
+  lib/ui.js, lib/engine3d.js, lib/vessel.js,
+  lib/theme.js                                — shared engine, frozen unless
                                                   you have a good reason to
                                                   touch them (every page depends
                                                   on them — see below)
@@ -60,7 +61,10 @@ reinvent the layout, copy a neighbouring section verbatim and edit it.
 
 ## House style contract (every page)
 
-- **Light mode only** (projected in a classroom), white background.
+- **Designed for light mode** (projected in a classroom), white background —
+  every sim is authored and colour-tuned against a white canvas. Dark mode is
+  layered on top globally, not per-sim: see "Dark mode" below. Never add
+  per-sim dark-mode logic or dark-tuned colours to an individual page.
 - **Chunky**: 3–10px strokes, 15–30px bold labels, big controls — `sim.css`
   does most of this for you.
 - Full viewport `100vw × 100vh`, no page scrolling (`sim.css` sets
@@ -80,6 +84,23 @@ reinvent the layout, copy a neighbouring section verbatim and edit it.
   screenshotter) waits on this.
 - `'use strict';` vanilla JS, no libraries, self-contained file.
 
+### Dark mode
+
+Site-wide light/dark toggle, driven entirely by `lib/theme.js` (the `Theme`
+global) — never add dark-specific colours or logic to an individual sim.
+Dark rendering is one global CSS rule in `sim.css`:
+`html[data-theme="dark"] { filter: invert(1) hue-rotate(180deg); }` (plus a
+second pass on `img` so raster screenshots invert twice and cancel back to
+normal). This darkens the chrome *and* the 3D canvas scene together in one
+shot — cheap and "rough" rather than a hand-tuned palette, deliberately, so
+individual sims stay untouched. `Theme.current()` checks
+`localStorage['sim-theme']`, falling back to the OS `prefers-color-scheme`;
+`Theme.mountToggle({small, floating})` builds the toggle button — `SimUI`
+already mounts one in the control-panel header corner for every sim
+automatically, and `index.html` mounts a `{floating: true}` one since it
+doesn't use `SimUI`. New sim pages don't need to think about any of this
+beyond including the script tag below.
+
 ### Page skeleton (copy this — note the `../` paths, files live one level
 under `sims/` in a subject subdirectory)
 
@@ -94,6 +115,7 @@ under `sims/` in a subject subdirectory)
 </head>
 <body>
 <canvas id="sim"></canvas>
+<script src="../lib/theme.js"></script>
 <script src="../lib/ui.js"></script>
 <script src="../lib/engine3d.js"></script>
 <script src="../lib/vessel.js"></script>   <!-- chemistry sims only -->
@@ -210,26 +232,58 @@ lerp`. Colour utils `lighten(hex,t)` / `shade(hex,f)` are global.
 ### `lib/vessel.js` (chemistry only)
 
 - `drawBeaker(eng, {x,z, r, y0, y1, level, liquid, glass, lineW, lip})` —
-  straight vessel (beaker if squat, test tube if slim). `liquid` should be
-  `rgba(...,0.5–0.6)`.
+  straight vessel (beaker if squat, flat-bottomed tube if slim). `liquid`
+  should be `rgba(...,0.5–0.6)`.
+- `drawTestTube(eng, {x,z, r, y0, y1, level, liquid, glass, lineW})` —
+  round-bottomed test tube: straight walls closed by a hemispherical bowl.
+  `y0` is the lowest point of the bowl; the hemisphere centre is `y0 + r`.
+  It can't stand on the bench — hang it from a clamp stand (base plate +
+  rod + arm boxes, plus an `eng.line(circle3(clampY, r + 0.07))` ring),
+  see `chemistry/ph-scale.html`.
 - `drawFlask(eng, {x,z, rBase, rNeck, y0, yShoulder, y1, level, liquid})` —
   conical flask.
-- `ParticleSwarm({r, y0, y1, x, z})` → swarm confined to that cylinder:
+- `drawMolecule(eng, p, dir, spec, {scale, showLabels})` — ball-and-stick
+  molecule at `p`, local +x axis aligned with `dir` (pass the particle's
+  velocity so it tumbles as it moves; for non-swarm particles store a random
+  yaw phase/speed + tilt at spawn and rotate the dir each frame, as
+  `combustion.html` does). `spec = { atoms: [{d:[x,y,z], r, color, label?,
+  highlight?}], bonds: [[i,j],…], bondColor?, bondW? }`. It handles the
+  composite-object depthOverride gotcha internally (bonds first, atoms
+  back-to-front, all at the molecule centre's depth) — never hand-roll a
+  multi-sphere molecule again.
+- `ParticleSwarm({r, y0, y1, x, z, bowl?, rAt?})` → swarm confined to that
+  cylinder:
+  - `bowl: {yc, r}` — hemispherical bottom (round test tube): below `yc`
+    particles bounce off that sphere instead of the wall/floor. Pair with
+    `drawTestTube`: `bowl.yc` = glass `y0 + r`, `bowl.r` = swarm `r`.
+  - `rAt: y => radius` — height-dependent wall (a conical flask's taper);
+    without it particles poke through sloped glass once the level rises.
+    See `neutralisation.html` (`flaskRAt`).
   - `.want(key, {n, color, radius, label, speed})` — declare/update a group;
     changing `n` later drifts the population gradually (nice for reactions)
   - `.setRegion({y1: newSurface})` when the liquid level changes
-  - `.step(dt)` then `.draw(eng, showLabels)`
+  - `.step(dt)` then `.draw(eng, showLabels)` — or skip `.draw` and render
+    `.list(key)` yourself (all four chemistry sims do, to switch between
+    labelled spheres and `drawMolecule` models)
   - `.count(key)` — current live count
 - `circle3(y, r, n?)` and `sideVec(eng)` for custom glassware.
+- All four chemistry sims share a **particle-mode toggle convention**: a
+  `ui.group('Particles')` with `ui.toggle(gp, 'Labelled spheres (vs molecule
+  models)', false, …)` — default **off = accurate molecule models** (bare H⁺
+  dust, bonded O–H, real relative ion sizes), on = big uniform spheres
+  labelled with full formulas ('H⁺', 'OH⁻', 'Na⁺'…). Reuse the exact label
+  string and default in any new chemistry sim.
 - **If a non-chemistry sim needs `sideVec` or `frontVec`** (e.g. for a
-  camera-facing flame/cone silhouette, like `chemistry/combustion.html`
-  does), don't add a `<script src="../lib/vessel.js">` tag just for one
-  helper — inline the ~3-line function instead. `sideVec` is:
+  camera-facing flame/cone silhouette) and nothing else from vessel.js,
+  don't add a `<script src="../lib/vessel.js">` tag just for one helper —
+  inline the ~3-line function instead. `sideVec` is:
   ```js
   function sideVec(eng) {
     return [-Math.cos(eng.cam.yaw), 0, Math.sin(eng.cam.yaw)];
   }
   ```
+  (`combustion.html` used to inline it but now loads vessel.js properly,
+  since it also uses `drawMolecule`.)
 
 ## Testing
 
@@ -248,6 +302,13 @@ headless Chrome, zero npm deps. Key traps:
   with `await page.eval("frame(<some_tms>)")` — `page.eval` throws with the
   real stack trace, which a live rAF loop swallows.
 - Fail on zero-things-scanned/rendered, never let a test pass vacuously.
+- `tests/test_chemistry.js` covers all four chemistry sims — run it after
+  touching them or vessel.js. Its containment assertions (every particle
+  inside the vessel's glass profile) are what caught `ParticleSwarm`
+  silently dropping newly added region options; keep geometry assertions
+  like that when adding vessel/swarm features, and remember the live rAF
+  loop keeps mutating state between `page.eval` calls (assert with slack,
+  not exact equality, on anything time-driven).
 
 **Preview thumbnails** (`previews/<slug>.png`, used by `index.html`'s card
 grid): after a visual change worth re-previewing, recapture with headless

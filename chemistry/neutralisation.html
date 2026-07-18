@@ -8,6 +8,7 @@
 </head>
 <body>
 <canvas id="sim"></canvas>
+<script src="../lib/theme.js"></script>
 <script src="../lib/ui.js"></script>
 <script src="../lib/engine3d.js"></script>
 <script src="../lib/vessel.js"></script>
@@ -15,7 +16,25 @@
 'use strict';
 const INK = '#1a1a2e';
 const H_COL = '#e63946', OH_COL = '#2563eb', NA_COL = '#94a3b8', CL_COL = '#86efac';
+const OH_H_COL = '#93c5fd', WATER_COL = '#94a3b8';
 const STAND = '#64748b', STAND_DARK = '#475569';
+
+/* ball-and-stick specs for "molecule models" mode (shared shape with ph-scale) */
+const MOL_OH = {
+  atoms: [
+    { d: [0, 0, 0], r: 0.05, color: OH_COL, label: '−' },
+    { d: [0.09, 0, 0], r: 0.026, color: OH_H_COL }
+  ],
+  bonds: [[0, 1]], bondColor: OH_COL, bondW: 2
+};
+const MOL_H2O = {
+  atoms: [
+    { d: [0, 0, 0], r: 0.042, color: WATER_COL },
+    { d: [0.046, 0.059, 0], r: 0.022, color: '#e2e8f0' },
+    { d: [0.046, -0.059, 0], r: 0.022, color: '#e2e8f0' }
+  ],
+  bonds: [[0, 1], [0, 2]], bondColor: WATER_COL, bondW: 1.8
+};
 
 /* universal indicator ramp, index = round(pH), 0..14 — shared with ph-scale.html */
 const UNIVERSAL = ['#c81d25', '#e01b24', '#f04e23', '#f68b1f', '#fbba16', '#f7e017', '#c6d92d',
@@ -41,7 +60,8 @@ const S = {
   dripRate: 1.5,     // mL/s
   running: false,
   indicator: 'universal', // universal | phenolphthalein
-  showIons: true, showGraph: true, labels: true
+  showIons: true, showWater: true, showGraph: true, labels: true,
+  labelledIons: false // false = molecule models (bare H+, bonded O–H, sized ions); true = uniform labelled spheres
 };
 
 const ui = SimUI({ back: '../index.html', title: 'Neutralisation (Titration)', subtitle: 'HCl + NaOH → NaCl + H₂O — drag to orbit, scroll to zoom' });
@@ -68,8 +88,12 @@ ui.segment(gi, null, [
   { value: 'phenolphthalein', label: 'Phenolphthalein' }
 ], 'universal', v => S.indicator = v);
 
+const gp = ui.group('Particles');
+ui.toggle(gp, 'Labelled spheres (vs molecule models)', false, v => S.labelledIons = v);
+
 const gv = ui.group('Show / hide');
 ui.toggle(gv, 'Ions', true, v => S.showIons = v);
+ui.toggle(gv, 'Water made', true, v => S.showWater = v, { swatch: OH_H_COL });
 ui.toggle(gv, 'pH graph', true, v => S.showGraph = v);
 ui.toggle(gv, 'Labels', true, v => S.labels = v);
 
@@ -89,7 +113,14 @@ const FLASK = { rBase: 1.4, rNeck: 0.35, y0: -1.6, yShoulder: -0.3, y1: 1.0 };
 const BUR = { r: 0.28, y0: 1.7, y1: 4.1 };
 const TIP_Y = BUR.y0 - 0.15;
 
-const swarm = ParticleSwarm({ r: FLASK.rBase * 0.75, y0: FLASK.y0 + 0.1, y1: 0 });
+/* swarm walls follow the flask's conical taper so ions never poke through
+   the sloped glass as the level rises */
+const flaskRAt = y => {
+  if (y >= FLASK.yShoulder) return FLASK.rNeck;
+  const t = (y - FLASK.y0) / (FLASK.yShoulder - FLASK.y0);
+  return FLASK.rBase + (FLASK.rNeck - FLASK.rBase) * t;
+};
+const swarm = ParticleSwarm({ r: FLASK.rBase * 0.85, y0: FLASK.y0 + 0.1, y1: 0, rAt: y => flaskRAt(y) * 0.85 });
 const drops = []; // { y }
 let dropTimer = 0;
 
@@ -135,17 +166,20 @@ function frame(tms) {
     if (drops[i].y <= level) drops.splice(i, 1);
   }
 
-  /* ion counts — same shape as ph-scale.html's H+/OH- curve */
+  /* ion counts — same shape as ph-scale.html's H+/OH- curve; water molecules
+     accumulate as H⁺ + OH⁻ → H₂O up to the equivalence point */
   const nH = Math.max(0, Math.min(24, Math.round(2 * Math.pow(10, (7 - ph) / 2.6))));
   const nOH = Math.max(0, Math.min(24, Math.round(2 * Math.pow(10, (ph - 7) / 2.6))));
   const nNa = Math.max(0, Math.min(14, Math.round(S.Vb / 50 * 14)));
   const nCl = 10;
+  const nW = Math.round(Math.min(S.Vb, 25) / 25 * 16);
 
   swarm.setRegion({ y1: level - 0.05 });
-  swarm.want('H+', { n: S.showIons ? nH : 0, color: H_COL, radius: 0.09, label: '+', speed: 0.8 });
-  swarm.want('OH-', { n: S.showIons ? nOH : 0, color: OH_COL, radius: 0.09, label: '−', speed: 0.7 });
-  swarm.want('Na+', { n: S.showIons ? nNa : 0, color: NA_COL, radius: 0.08, label: '+', speed: 0.55 });
-  swarm.want('Cl-', { n: S.showIons ? nCl : 0, color: CL_COL, radius: 0.08, label: '−', speed: 0.55 });
+  swarm.want('H+', { n: S.showIons ? nH : 0, radius: S.labelledIons ? 0.09 : 0.022, speed: 0.8 });
+  swarm.want('OH-', { n: S.showIons ? nOH : 0, radius: S.labelledIons ? 0.09 : 0.05, speed: 0.7 });
+  swarm.want('Na+', { n: S.showIons ? nNa : 0, radius: S.labelledIons ? 0.08 : 0.05, speed: 0.55 });
+  swarm.want('Cl-', { n: S.showIons ? nCl : 0, radius: S.labelledIons ? 0.08 : 0.09, speed: 0.55 });
+  swarm.want('H2O', { n: S.showWater ? nW : 0, radius: 0.06, speed: 0.5 });
   swarm.step(dt);
 
   ctx.clearRect(0, 0, W(), H());
@@ -175,7 +209,7 @@ function frame(tms) {
 
   /* flask + liquid + ions */
   drawFlask(eng, Object.assign({}, FLASK, { level, liquid: liquidColour(ph) }));
-  swarm.draw(eng, S.labels);
+  drawParticles();
   if (S.labels) eng.label([FLASK.rBase + 0.5, FLASK.y0 + 0.3, 0], 'HCl (0.100 mol/L, 25 mL)', { color: '#475569', size: 15, lift: 2 });
 
   eng.flush(ctx);
@@ -190,6 +224,31 @@ function frame(tms) {
     'H&#8314; and OH&#8315; combine to make water; Na&#8314; and Cl&#8315; are spectator ions. Currently: <b>' + region + '</b>, pH ' + ph.toFixed(2));
 
   requestAnimationFrame(frame);
+}
+
+/* ions + water: uniform labelled spheres, or molecule models with real
+   relative sizes (bare H⁺ dust, bonded O–H, Na⁺ smaller than Cl⁻) */
+function drawParticles() {
+  const st = { stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1 };
+  const lbl = txt => S.labels ? Object.assign({ label: txt }, st) : st;
+  for (const pt of swarm.list('H2O')) {
+    if (S.labelledIons) eng.sphere(pt.p, 0.08, WATER_COL, lbl('H₂O'));
+    else drawMolecule(eng, pt.p, pt.v, MOL_H2O, {});
+  }
+  for (const pt of swarm.list('Na+')) {
+    eng.sphere(pt.p, S.labelledIons ? 0.08 : 0.05, NA_COL, lbl(S.labelledIons ? 'Na⁺' : '+'));
+  }
+  for (const pt of swarm.list('Cl-')) {
+    eng.sphere(pt.p, S.labelledIons ? 0.08 : 0.09, CL_COL, lbl(S.labelledIons ? 'Cl⁻' : '−'));
+  }
+  for (const pt of swarm.list('H+')) {
+    if (S.labelledIons) eng.sphere(pt.p, 0.09, H_COL, lbl('H⁺'));
+    else eng.sphere(pt.p, 0.022, H_COL, lbl('+'));
+  }
+  for (const pt of swarm.list('OH-')) {
+    if (S.labelledIons) eng.sphere(pt.p, 0.09, OH_COL, lbl('OH⁻'));
+    else drawMolecule(eng, pt.p, pt.v, MOL_OH, { showLabels: S.labels });
+  }
 }
 
 /* pH vs volume titration curve, bottom-left 2D overlay */

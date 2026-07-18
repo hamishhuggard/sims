@@ -8,6 +8,7 @@
 </head>
 <body>
 <canvas id="sim"></canvas>
+<script src="../lib/theme.js"></script>
 <script src="../lib/ui.js"></script>
 <script src="../lib/engine3d.js"></script>
 <script src="../lib/vessel.js"></script>
@@ -92,10 +93,35 @@ const foot = ui.footer('');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
 
 const { canvas, ctx, W, H } = SimCanvas();
-const eng = Engine3D(canvas, { dist: 10.5, yaw: 0.5, pitch: 0.3 });
+const eng = Engine3D(canvas, { dist: 11, yaw: 0.5, pitch: 0.3, target: [0, -0.2, 0] });
 
-const VESSEL = { r: 1.8, y0: -1.6, y1: 1.4, level: 0.8 };
-const swarm = ParticleSwarm({ r: VESSEL.r * 0.9, y0: VESSEL.y0 + 0.1, y1: VESSEL.level - 0.1 });
+/* round-bottomed test tube, held in a clamp stand above the bench */
+const VESSEL = { r: 0.95, y0: -2.1, y1: 1.9, level: 0.7 };
+const BENCH = -2.5;
+const STAND = '#64748b', STAND_DARK = '#475569';
+const swarm = ParticleSwarm({
+  r: VESSEL.r * 0.88,
+  y0: VESSEL.y0 + VESSEL.r * 0.12,
+  y1: VESSEL.level - 0.1,
+  bowl: { yc: VESSEL.y0 + VESSEL.r, r: VESSEL.r * 0.88 }
+});
+
+/* ball-and-stick specs for "molecule models" mode (local +x = heading) */
+const MOL_OH = {
+  atoms: [
+    { d: [0, 0, 0], r: 0.05, color: OH_COL, label: '−' },
+    { d: [0.09, 0, 0], r: 0.026, color: OH_H_COL }
+  ],
+  bonds: [[0, 1]], bondColor: OH_COL, bondW: 2
+};
+const MOL_H2O = {
+  atoms: [
+    { d: [0, 0, 0], r: 0.042, color: '#94a3b8' },
+    { d: [0.046, 0.059, 0], r: 0.022, color: '#e2e8f0' },
+    { d: [0.046, -0.059, 0], r: 0.022, color: '#e2e8f0' }
+  ],
+  bonds: [[0, 1], [0, 2]], bondColor: '#94a3b8', bondW: 1.8
+};
 
 function liquidColour() {
   if (S.indicator === 'universal') {
@@ -126,10 +152,9 @@ function frame(tms) {
   // In "labelled spheres" mode both ions get a bigger, uniform, readable size.
   const hR = (S.labelledIons ? 0.09 : 0.018) * S.sizeMul;
   const oR = (S.labelledIons ? 0.09 : 0.05) * S.sizeMul;
-  const hydR = 0.026 * S.sizeMul;
   swarm.want('H+', { n: S.showH ? nH : 0, radius: hR, speed: 0.8 });
   swarm.want('OH-', { n: S.showOH ? nOH : 0, radius: oR, speed: 0.7 });
-  swarm.want('H2O', { n: S.showWater ? Math.round(35 * S.countMul) : 0, radius: 0.04 * S.sizeMul, speed: 0.5 });
+  swarm.want('H2O', { n: S.showWater ? Math.round(30 * S.countMul) : 0, radius: 0.04 * S.sizeMul, speed: 0.5 });
   swarm.step(dt);
 
   ctx.clearRect(0, 0, W(), H());
@@ -137,15 +162,22 @@ function frame(tms) {
 
   /* bench grid */
   for (let g = -4; g <= 4.01; g += 2) {
-    eng.line([[g, -1.62, -4], [g, -1.62, 4]], { color: '#eef2f7', width: 1.5 });
-    eng.line([[-4, -1.62, g], [4, -1.62, g]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[g, BENCH, -4], [g, BENCH, 4]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-4, BENCH, g], [4, BENCH, g]], { color: '#eef2f7', width: 1.5 });
   }
 
-  drawBeaker(eng, Object.assign({}, VESSEL, { liquid: liquidColour(), lip: true }));
+  /* clamp stand: base, rod, arm, ring clamp around the tube */
+  eng.box([-2.2, BENCH + 0.06, 0], 0.55, 0.06, 0.55, STAND_DARK, { stroke: INK, strokeWidth: 1 });
+  eng.box([-2.2, -0.1, 0], 0.06, 2.35, 0.06, STAND, { stroke: INK, strokeWidth: 1 });
+  eng.box([-1.1, 1.2, 0], 1.1, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1 });
+  eng.line(circle3(1.2, VESSEL.r + 0.07), { color: STAND_DARK, width: 6 });
 
-  /* H2O : small, unlabelled background molecules */
+  drawTestTube(eng, Object.assign({}, VESSEL, { liquid: liquidColour() }));
+
+  /* H2O : small background molecules (bent ball-and-stick in molecule mode) */
   for (const pt of swarm.list('H2O')) {
-    eng.sphere(pt.p, 0.04 * S.sizeMul, '#cbd5e1');
+    if (S.labelledIons) eng.sphere(pt.p, 0.04 * S.sizeMul, '#cbd5e1');
+    else drawMolecule(eng, pt.p, pt.v, MOL_H2O, { scale: S.sizeMul });
   }
 
   if (S.labelledIons) {
@@ -164,11 +196,7 @@ function frame(tms) {
     /* OH- : an actual two-atom molecule — O (bigger, labelled) bonded to a
        smaller H, oriented along its current heading so it tumbles naturally */
     for (const pt of swarm.list('OH-')) {
-      const dir = v3.len(pt.v) > 0.01 ? v3.norm(pt.v) : [1, 0, 0];
-      const hPos = v3.add(pt.p, v3.mul(dir, oR + hydR + 0.015));
-      eng.line([pt.p, hPos], { color: OH_COL, width: 2 });
-      eng.sphere(hPos, hydR, OH_H_COL, { stroke: 'rgba(26,26,46,0.25)', strokeWidth: 1 });
-      eng.sphere(pt.p, oR, OH_COL, S.labels ? { label: '−', stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1 } : {});
+      drawMolecule(eng, pt.p, pt.v, MOL_OH, { scale: S.sizeMul, showLabels: S.labels });
     }
   }
 
@@ -179,8 +207,8 @@ function frame(tms) {
     const baseCol = isRed ? '#e63946' : '#2563eb';
     const changedCol = isRed ? '#2563eb' : '#e63946';
     const sv = sideVec(eng);
-    const sx = sv[0] * 1.1, sz = sv[2] * 1.1;
-    const stripTop = VESSEL.y1 + 0.6, stripBottom = VESSEL.y0 + 0.3;
+    const sx = sv[0] * 0.55, sz = sv[2] * 0.55;
+    const stripTop = VESSEL.y1 + 0.6, stripBottom = VESSEL.y0 + 0.75;
     const submergedY = VESSEL.level - 0.05;
     // dry (upper) half — always the original colour
     eng.line([[sx, stripTop, sz], [sx, submergedY, sz]], { color: baseCol, width: 8 });
