@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hooke's Law — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/theme.js"></script>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', F_COL = '#dc2626', SPRING = '#64748b', RULER = '#0f766e';
+const ACCENT = '#2563eb', WARN = '#ea580c', MASS_COL = '#475569';
+
+const G = 9.81;
+const SCALE = 4;          // scene units per metre
+const L0 = 0.25;          // natural (unstretched) length of the spring, metres
+const Y_TOP = 2.4;        // scene y of the spring's fixed top
+
+const S = {
+  k: 50,                  // N/m
+  massG: 300,             // grams on the hanger
+  xLim: 0.30,             // elastic limit — extension at which it stops obeying F = kx
+  allowLimit: true,       // let the spring go past its elastic limit
+  showRuler: true, showForce: true, showGraph: true, showStand: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: "Hooke's Law", subtitle: '$F = kx$ — a spring stretches in proportion to the load — drag to orbit, scroll to zoom' });
+
+const gs = ui.group('The spring');
+ui.slider(gs, 'Spring constant k', { min: 10, max: 120, step: 5, value: 50, fmt: v => v.toFixed(0) + ' N/m' }, v => S.k = v);
+ui.slider(gs, 'Elastic limit (extension)', { min: 0.10, max: 0.60, step: 0.01, value: 0.30, fmt: v => (v * 100).toFixed(0) + ' cm' }, v => S.xLim = v);
+ui.toggle(gs, 'Spring can be over-stretched', true, v => S.allowLimit = v, { swatch: WARN });
+
+const gl = ui.group('The load');
+const massSlider = ui.slider(gl, 'Mass hung on', { min: 0, max: 1000, step: 50, value: 300, fmt: v => v.toFixed(0) + ' g' }, v => S.massG = v);
+ui.buttons(gl, [
+  { label: '⟲ Take all masses off', onClick: () => setMass(0) },
+  { label: '⤓ Load it right up', onClick: () => setMass(1000), primary: true }
+]);
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Ruler', true, v => S.showRuler = v, { swatch: RULER });
+ui.toggle(gv, 'Weight arrow', true, v => S.showForce = v, { swatch: F_COL });
+ui.toggle(gv, 'Force–extension graph', true, v => S.showGraph = v, { swatch: ACCENT });
+ui.toggle(gv, 'Clamp stand', true, v => S.showStand = v);
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+const gr = ui.group('Readings');
+const roF = ui.readout(gr, 'Load $F = mg$', '');
+const roX = ui.readout(gr, 'Extension $x$', '');
+const roK = ui.readout(gr, 'Measured $F/x$', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 11, yaw: 0.45, pitch: 0.18 });
+
+/* the spring's own force–extension law: linear, then floppy past the elastic limit */
+const SOFT = 0.3;                       // stiffness left once it is over-stretched
+function extensionFor(F) {
+  const xl = S.xLim;
+  const Flim = S.k * xl;
+  if (!S.allowLimit || F <= Flim) return F / S.k;
+  return xl + (F - Flim) / (S.k * SOFT);
+}
+function forceAt(x) {                    // inverse — used to draw the graph line
+  const xl = S.xLim;
+  if (!S.allowLimit || x <= xl) return S.k * x;
+  return S.k * xl + S.k * SOFT * (x - xl);
+}
+
+/* the displayed extension eases toward the target so adding masses looks springy */
+let xShown = 0;
+function setMass(m) { massSlider.set(m); }
+
+function helix(len, coils, r) {
+  const pts = [], n = Math.max(60, coils * 14);
+  for (let i = 0; i <= n; i++) {
+    const f = i / n, a = f * coils * Math.PI * 2;
+    pts.push([r * Math.cos(a), Y_TOP - f * len, r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+function drawStand() {
+  eng.box([-0.5, -2.05, 0], 0.85, 0.09, 0.5, '#94a3b8', { stroke: INK, strokeWidth: 2 });
+  eng.box([-1.05, 0.15, 0], 0.09, 2.1, 0.09, '#94a3b8', { stroke: INK, strokeWidth: 2 });
+  eng.box([-0.52, Y_TOP + 0.2, 0], 0.62, 0.08, 0.09, '#94a3b8', { stroke: INK, strokeWidth: 2 });
+  eng.line([[0, Y_TOP + 0.2, 0], [0, Y_TOP, 0]], { color: MASS_COL, width: 5 });
+}
+
+function drawRuler(x) {
+  const rx = 1.35, y0 = Y_TOP - L0 * SCALE;   // zero of the ruler = the unloaded pointer
+  const yBot = y0 - 0.65 * SCALE;
+  eng.poly([[rx, y0 + 0.25, -0.16], [rx, y0 + 0.25, 0.16], [rx, yBot, 0.16], [rx, yBot, -0.16]],
+    '#ecfdf5', { stroke: RULER, strokeWidth: 3 });
+  for (let cm = 0; cm <= 65; cm += 5) {
+    const y = y0 - (cm / 100) * SCALE;
+    const major = cm % 10 === 0;
+    eng.line([[rx, y, -0.16], [rx, y, major ? 0.16 : 0.02]], { color: RULER, width: major ? 3 : 2 });
+    if (major && S.labels) eng.label([rx, y, 0.42], cm + '', { color: RULER, size: 15, lift: 1 });
+  }
+  // pointer at the current bottom of the spring
+  const yp = y0 - x * SCALE;
+  eng.line([[0.28, yp, 0], [rx + 0.05, yp, 0]], { color: F_COL, width: 3, dash: [5, 4] });
+  eng.sphere([rx + 0.05, yp, 0], 0.09, F_COL, { stroke: INK, strokeWidth: 1.5 });
+  if (S.labels) eng.label([rx + 0.1, yp + 0.28, 0], 'x = ' + (x * 100).toFixed(1) + ' cm', { color: F_COL, size: 17, lift: 2 });
+}
+
+/* ---------- force–extension graph (2D overlay, bottom-left) ---------- */
+function drawGraph(x, F) {
+  const gw = Math.min(420, W() * 0.4), gh = 210;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  const mx = gx + 50, mw = gw - 68, my = gy + 20, mh = gh - 50;
+  const X_MAX = 0.65, F_MAX = 12;                  // metres, newtons
+  const px = xx => mx + (xx / X_MAX) * mw;
+  const py = ff => my + mh - (ff / F_MAX) * mh;
+
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx, my + mh); ctx.lineTo(mx + mw, my + mh); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.stroke();
+  Draw.label(ctx, 'F (N)', gx + 26, my + 4, { size: 14, color: '#475569' });
+  Draw.label(ctx, 'extension x (cm) →', mx + mw - 60, gy + gh - 14, { size: 13, color: '#475569' });
+  for (const f of [4, 8, 12]) Draw.label(ctx, f + '', mx - 12, py(f), { size: 12, color: '#94a3b8', align: 'right' });
+  for (const c of [20, 40, 60]) Draw.label(ctx, c + '', px(c / 100), my + mh + 12, { size: 12, color: '#94a3b8' });
+
+  // the spring's law: straight line, then the non-linear droop
+  ctx.strokeStyle = ACCENT; ctx.lineWidth = 3.5; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (let i = 0; i <= 80; i++) {
+    const xx = (i / 80) * X_MAX, ff = forceAt(xx);
+    const X = px(xx), Y = py(Math.min(ff, F_MAX + 2));
+    i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+  }
+  ctx.stroke();
+
+  // the elastic limit
+  if (S.allowLimit && S.xLim < X_MAX) {
+    ctx.strokeStyle = WARN; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(px(S.xLim), my); ctx.lineTo(px(S.xLim), my + mh); ctx.stroke();
+    ctx.setLineDash([]);
+    Draw.label(ctx, 'elastic limit', px(S.xLim) + 5, my + 8, { size: 12, color: WARN, align: 'left' });
+  }
+
+  // where we are now
+  const cx = px(Math.min(x, X_MAX)), cy = py(Math.min(F, F_MAX));
+  ctx.fillStyle = F_COL;
+  ctx.beginPath(); ctx.arc(cx, cy, 6.5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.stroke();
+}
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  const F = (S.massG / 1000) * G;
+  const xTarget = extensionFor(F);
+  xShown += (xTarget - xShown) * Math.min(1, dt * 7);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  if (S.showStand) drawStand();
+
+  const len = (L0 + xShown) * SCALE;
+  const overLimit = S.allowLimit && xShown > S.xLim + 1e-4;
+  eng.line(helix(len, 14, 0.26), { color: overLimit ? WARN : SPRING, width: 5 });
+
+  const yBot = Y_TOP - len;
+  // hanger + slotted masses
+  eng.line([[0, yBot, 0], [0, yBot - 0.22, 0]], { color: MASS_COL, width: 4 });
+  const nDisc = Math.round(S.massG / 100);
+  for (let i = 0; i < nDisc; i++) {
+    eng.box([0, yBot - 0.34 - i * 0.15, 0], 0.34, 0.065, 0.34, i % 2 ? '#64748b' : MASS_COL, { stroke: INK, strokeWidth: 1.5 });
+  }
+  const yLoad = yBot - 0.34 - Math.max(0, nDisc - 1) * 0.15;
+  if (S.labels && S.massG > 0) eng.label([0, yLoad - 0.34, 0], S.massG + ' g', { color: INK, size: 17, lift: 2 });
+
+  if (S.showForce && S.massG > 0) {
+    const a = 0.3 + F * 0.09;
+    eng.arrow([0, yLoad - 0.18, 0], [0, yLoad - 0.18 - a, 0], { color: F_COL, width: 5, label: S.labels ? 'W = mg' : '' });
+  }
+  if (S.showRuler) drawRuler(xShown);
+
+  eng.flush(ctx);
+
+  if (S.showGraph) drawGraph(xShown, F);
+
+  roF.set(F.toFixed(2) + ' N');
+  roX.set((xShown * 100).toFixed(1) + ' cm');
+  roK.set(xShown > 1e-4 ? (F / xShown).toFixed(1) + ' N/m' : '—');
+  foot.set(overLimit
+    ? 'Past the <b>elastic limit</b> the line bends over — the spring keeps stretching for less and less extra load, so <b>$F = kx$ no longer holds</b>.'
+    : '<b>$F = kx$</b> — double the load, double the extension. &nbsp;$x = F/k = ' + F.toFixed(2) + ' / ' + S.k.toFixed(0) + ' = ' + (xShown).toFixed(3) + '$ m');
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

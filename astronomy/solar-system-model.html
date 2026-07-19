@@ -38,8 +38,19 @@ const KM_PER_UNIT_TRUE = 149600000 / AU_UNIT;
 
 const EARTH_PERIOD_S = 8; // sim-seconds for one Earth orbit at speed = 1
 
+/* Camera framing that keeps the whole system in shot at each end of the
+   distance slider (Engine3D clamps cam.dist to 2…80, so the true layout is
+   sized by AU_UNIT to fit inside that). */
+const CAM_DIST_CLASSROOM = 32, CAM_DIST_TRUE = 72;
+/* Smallest a body is ever drawn, in screen pixels. Without a floor the true
+   scale planets are ~0.001 px and simply disappear — which is the lesson, but
+   an empty canvas looks like a broken sim, so they stay as tiny dots and the
+   footer says out loud that the dots are far bigger than the real planets. */
+const MIN_DOT_PX = 2.2;
+
 const S = {
-  scale: 'classroom',   // 'classroom' | 'true'
+  sizeMix: 0,           // 0 = stylised, exaggerated radii · 1 = true to scale
+  distMix: 0,           // 0 = compressed orbits      · 1 = true to scale
   speed: 1,
   running: true,
   showOrbits: true, showLabels: true, showBelt: true
@@ -50,10 +61,33 @@ const angle = PLANETS.map((p, i) => i * 0.7); // stagger starting positions
 const ui = SimUI({ back: '../index.html', title: 'The Solar System', subtitle: 'Scale, order, and orbits — drag to orbit, scroll to zoom' });
 
 const gm = ui.group('Scale');
-ui.segment(gm, null, [
+const pct = v => v <= 0 ? 'stylised' : v >= 1 ? 'true scale' : (v * 100).toFixed(0) + '% true';
+let presetting = false;   // guards preset ⇄ slider feedback
+const sldSize = ui.slider(gm, 'Planet size: stylised → true scale',
+  { min: 0, max: 1, step: 0.01, value: 0, fmt: pct },
+  v => { S.sizeMix = v; if (!presetting) syncPreset(); });
+const sldDist = ui.slider(gm, 'Orbit distance: stylised → true scale',
+  { min: 0, max: 1, step: 0.01, value: 0, fmt: pct },
+  v => {
+    S.distMix = v;
+    eng.cam.dist = CAM_DIST_CLASSROOM + (CAM_DIST_TRUE - CAM_DIST_CLASSROOM) * v;
+    if (!presetting) syncPreset();
+  });
+const segScale = ui.segment(gm, null, [
   { value: 'classroom', label: 'Classroom scale' },
   { value: 'true', label: 'True distances' }
-], 'classroom', v => { S.scale = v; eng.cam.dist = v === 'true' ? 70 : 32; });
+], 'classroom', v => {
+  if (presetting) return;
+  presetting = true;
+  sldSize.set(v === 'true' ? 1 : 0);
+  sldDist.set(v === 'true' ? 1 : 0);
+  presetting = false;
+});
+function syncPreset() {
+  const want = (S.sizeMix >= 1 && S.distMix >= 1) ? 'true'
+             : (S.sizeMix <= 0 && S.distMix <= 0) ? 'classroom' : null;
+  if (want && want !== segScale.get()) { presetting = true; segScale.set(want); presetting = false; }
+}
 
 const gt = ui.group('Time');
 ui.slider(gt, 'Time speed', { min: 0, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.speed = v);
@@ -84,9 +118,18 @@ const belt = [];
   for (let i = 0; i < 90; i++) belt.push({ a: rand() * Math.PI * 2, jitter: 0.85 + rand() * 0.3, y: (rand() - 0.5) * 0.25 });
 })();
 
-function distFor(p) { return S.scale === 'true' ? p.trueAU * AU_UNIT : p.classroomDist; }
-function radiusFor(p) { return S.scale === 'true' ? p.realRadiusKm / KM_PER_UNIT_TRUE : p.classroomRadius; }
-function sunRadius() { return S.scale === 'true' ? SUN.realRadiusKm / KM_PER_UNIT_TRUE : SUN.classroomRadius; }
+/* Distances interpolate linearly (the two layouts are the same order of
+   magnitude). Radii interpolate *geometrically* — true radii are ~4000×
+   smaller than the stylised ones, so a linear blend would collapse them to
+   nothing in the first 1% of the slider; a log blend shrinks smoothly all the
+   way across the drag. Both are exact at 0 and 1. */
+function mix(a, b, t) { return a + (b - a) * t; }
+function mixLog(a, b, t) { return a * Math.pow(b / a, t); }
+function distFor(p) { return mix(p.classroomDist, p.trueAU * AU_UNIT, S.distMix); }
+function radiusFor(p) { return mixLog(p.classroomRadius, p.realRadiusKm / KM_PER_UNIT_TRUE, S.sizeMix); }
+function sunRadius() { return mixLog(SUN.classroomRadius, SUN.realRadiusKm / KM_PER_UNIT_TRUE, S.sizeMix); }
+/* world-space radius of a MIN_DOT_PX dot at the orbit target's depth */
+function minDotR() { return MIN_DOT_PX * eng.cam.dist / (eng.cam.focal * Math.min(W(), H())); }
 function periodFor(p) {
   const dEarth = distFor(PLANETS[2]);
   return EARTH_PERIOD_S * Math.pow(distFor(p) / dEarth, 1.5);
@@ -106,9 +149,10 @@ function frame(tms) {
   eng.begin(W(), H());
 
   // Sun with a soft glow
-  const sr = sunRadius();
+  const minR = minDotR();
+  const sr = Math.max(sunRadius(), minR * 1.4);
   eng.sphere([0, 0, 0], sr * 1.7, 'rgba(251,191,36,0.18)', { highlight: 'rgba(251,191,36,0)' });
-  eng.sphere([0, 0, 0], Math.max(sr, 0.05), SUN_COL, { stroke: '#d97706', strokeWidth: 2 });
+  eng.sphere([0, 0, 0], sr, SUN_COL, { stroke: '#d97706', strokeWidth: 2 });
   if (S.showLabels) eng.label([0, sr + 0.8, 0], 'Sun', { color: '#b45309', size: 20, lift: 2 });
 
   // asteroid belt
@@ -123,16 +167,16 @@ function frame(tms) {
   }
 
   PLANETS.forEach((p, i) => {
-    const d = distFor(p), r = radiusFor(p);
+    const d = distFor(p), r = Math.max(radiusFor(p), minR);
     if (S.showOrbits) {
       const pts = [];
       for (let j = 0; j <= 64; j++) { const a = (j / 64) * Math.PI * 2; pts.push([d * Math.cos(a), 0, d * Math.sin(a)]); }
       eng.line(pts, { color: '#e2e8f0', width: 1.5 });
     }
     const pos = [d * Math.cos(angle[i]), 0, d * Math.sin(angle[i])];
-    eng.sphere(pos, Math.max(r, 0.04), p.color, { stroke: INK, strokeWidth: 1.2 });
+    eng.sphere(pos, r, p.color, { stroke: INK, strokeWidth: 1.2 });
     if (p.ring) {
-      const rr = Math.max(r, 0.04);
+      const rr = r;
       for (const mul of [1.5, 1.75, 2.0]) {
         const ring = [];
         for (let j = 0; j <= 40; j++) {
@@ -149,9 +193,14 @@ function frame(tms) {
 
   const daysPerSec = (365 / EARTH_PERIOD_S) * S.speed;
   roRate.set(daysPerSec >= 1 ? daysPerSec.toFixed(0) + ' Earth days / real second' : (daysPerSec * 24).toFixed(1) + ' Earth hours / real second');
-  foot.set(S.scale === 'classroom'
+  // how many times bigger than life Earth is actually being drawn right now
+  const earth = PLANETS[2];
+  const exag = Math.max(radiusFor(earth), minR) / (earth.realRadiusKm / KM_PER_UNIT_TRUE)
+             * (distFor(earth) / (earth.trueAU * AU_UNIT));
+  foot.set(S.sizeMix <= 0 && S.distMix <= 0
     ? '<b>Classroom scale:</b> sizes and distances are both exaggerated so every planet is visible — the real Solar System is far emptier than this.'
-    : '<b>True distances:</b> at a scale where the distances are real, every planet — and the Sun — shrinks to <b>smaller than a pixel</b>. You can never see true sizes and true distances at once.');
+    : '<b>Drawn ' + (exag >= 1000 ? Math.round(exag / 100) / 10 + 'k' : Math.round(exag))
+      + '× too big for its orbit.</b> Push both sliders to <i>true scale</i>: the planets shrink far below one pixel (they are only still visible as a minimum-size dot) and the Solar System turns out to be almost entirely empty space.');
 
   requestAnimationFrame(frame);
 }

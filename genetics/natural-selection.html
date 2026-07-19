@@ -25,19 +25,25 @@ function colorLerp(c0, c1, t) { const a = hexToRgb(c0), b = hexToRgb(c1); return
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function ease(t) { return t * t * (3 - 2 * t); }
 
-const N_POP = 46;
+// The colony starts as a handful of *identical* bugs — every bit of colour variation you
+// see later was created by mutation at birth, not seeded at t = 0.
+const N_SEED = 3, N_CAP = 46, SEED_TRAIT = 0.15;
+const BREED_EVERY = 0.9, LITTER_MAX = 3;
 const S = { background: 0.5, selection: 1.5, mutation: 0.06, running: true, showHistogram: true, showGraph: true };
 
 let POP = [], birds = [], puffs = [], history = [];
-let eaten = 0, huntTimer = 0.6, sampleTimer = 0, lastT = 0;
+let eaten = 0, huntTimer = 0.6, breedTimer = 0.8, sampleTimer = 0, lastT = 0;
 
-function mkBug(trait, grow) {
-  return { x: (Math.random() - 0.5) * 11, z: (Math.random() - 0.5) * 11, h: Math.random() * PI2, trait, phase: Math.random() * 6, grow: grow === undefined ? 1 : grow, dead: false, targeted: false };
+function mkBug(trait, x, z, h, grow) {
+  return { x, z, h, trait, phase: Math.random() * 6, grow, dead: false, targeted: false };
 }
 function seedPopulation() {
   POP = [];
-  for (let i = 0; i < N_POP; i++) POP.push(mkBug(Math.random()));
-  birds = []; puffs = []; eaten = 0; huntTimer = 0.6; sampleTimer = 0;
+  for (let i = 0; i < N_SEED; i++) {          // a small ring in the middle, all one colour
+    const a = i / N_SEED * PI2;
+    POP.push(mkBug(SEED_TRAIT, Math.cos(a) * 0.9, Math.sin(a) * 0.9, a, 1));
+  }
+  birds = []; puffs = []; eaten = 0; huntTimer = 0.6; breedTimer = 0.8; sampleTimer = 0;
   history = [avgTrait()];
 }
 function living() { return POP.filter(p => !p.dead); }
@@ -49,12 +55,26 @@ function spawnHunt(target) {
   birds.push({ target, tx: target.x, tz: target.z, ang: Math.random() * PI2, wing: Math.random() * 6, t: 0, dur: 1.1 + Math.random() * 0.35, struck: false, done: false });
 }
 
-function spawnBirth() {
+// A parent pops a brood of babies out right beside itself: each starts at grow = 0 (a speck),
+// heading away from the parent, and swells to full size as it walks off.
+function spawnBrood(parent, n) {
+  if (!parent) return 0;
+  let made = 0;
+  for (let i = 0; i < n; i++) {
+    if (living().length >= N_CAP) break;
+    const ang = Math.random() * PI2, d = 0.30 + Math.random() * 0.18;
+    const trait = clamp(parent.trait + (Math.random() - 0.5) * S.mutation * 2, 0, 1);
+    POP.push(mkBug(trait,
+      clamp(parent.x + Math.cos(ang) * d, -5.5, 5.5),
+      clamp(parent.z + Math.sin(ang) * d, -5.5, 5.5),
+      ang, 0));
+    made++;
+  }
+  return made;
+}
+function randomParent() {
   const alive = living();
-  const pool = alive.length ? alive : POP;
-  const parent = pool[Math.floor(Math.random() * pool.length)];
-  let trait = parent ? parent.trait + (Math.random() - 0.5) * S.mutation * 2 : Math.random();
-  POP.push(mkBug(clamp(trait, 0, 1), 0));
+  return alive.length ? alive[Math.floor(Math.random() * alive.length)] : null;
 }
 
 function updateEcosystem(dt) {
@@ -64,12 +84,19 @@ function updateEcosystem(dt) {
   huntTimer -= dt;
   if (S.selection > 0.05 && huntTimer <= 0) {
     huntTimer = 0.3 * (0.6 + Math.random() * 0.8);
-    const alive = living().filter(b => !b.targeted);
+    const alive = living().filter(b => !b.targeted && b.grow >= 0.6);   // newborn specks are too small to spot
     if (alive.length) {
       const cand = alive[Math.floor(Math.random() * alive.length)];
       const m = Math.abs(cand.trait - S.background);
       if (Math.random() < Math.min(0.97, m * S.selection)) spawnHunt(cand);
     }
+  }
+
+  // Breeding: while there's room on the patch, a random survivor pops out a brood of babies.
+  breedTimer -= dt;
+  if (breedTimer <= 0) {
+    breedTimer = BREED_EVERY * (0.7 + Math.random() * 0.6);
+    if (living().length < N_CAP) spawnBrood(randomParent(), 1 + Math.floor(Math.random() * LITTER_MAX));
   }
 
   for (const b of birds) {
@@ -82,7 +109,7 @@ function updateEcosystem(dt) {
     if (!b.struck && u >= 0.5) {
       b.struck = true;
       const tb = b.target;
-      if (tb && !tb.dead) { tb.dead = true; eaten++; spawnPuff(tb.x, tb.z); spawnBirth(); }  // eaten → a survivor breeds a replacement
+      if (tb && !tb.dead) { tb.dead = true; eaten++; spawnPuff(tb.x, tb.z); spawnBrood(randomParent(), 1); }  // eaten → a survivor breeds a replacement beside itself
     }
   }
   birds = birds.filter(b => !b.done);
@@ -93,9 +120,10 @@ function spawnPuff(x, z) { puffs.push({ x, z, t: 0 }); }
 function updatePuffs(dt) { for (const pf of puffs) pf.t += dt; puffs = puffs.filter(pf => pf.t < 0.45); }
 
 const BUG_SEP = 0.62;                    // keep bug bodies from overlapping
+function bugSize(p) { return Math.max(0.3, ease(p.grow)); }
 function wander(dt) {
   for (const p of POP) {
-    if (p.grow < 1) p.grow = Math.min(1, p.grow + dt * 3);
+    if (p.grow < 1) p.grow = Math.min(1, p.grow + dt * 1.6);   // babies swell to full size in ~0.6 s
     p.h += Math.sin((lastT + p.phase) * 0.7) * 0.6 * dt;
     const sp = 0.35;
     p.x += Math.cos(p.h) * sp * dt;
@@ -107,9 +135,12 @@ function wander(dt) {
       const a = POP[i], b = POP[j];
       let dx = b.x - a.x, dz = b.z - a.z;
       let d = Math.hypot(dx, dz);
-      if (d < BUG_SEP) {
+      // separation distance scales with how grown the pair is, so a brood can sit tucked
+      // against its parent at birth and only spreads out as the babies fill out
+      const sep = BUG_SEP * (bugSize(a) + bugSize(b)) / 2;
+      if (d < sep) {
         if (d < 1e-3) { dx = Math.random() - 0.5; dz = Math.random() - 0.5; d = Math.hypot(dx, dz) || 1; }
-        const push = (BUG_SEP - d) / 2;
+        const push = (sep - d) / 2;
         dx /= d; dz /= d;
         a.x -= dx * push; a.z -= dz * push;
         b.x += dx * push; b.z += dz * push;
@@ -144,10 +175,10 @@ ui.toggle(gv, 'Average-trait graph', true, v => S.showGraph = v);
 
 const gd = ui.group('Readings');
 const roAvg = ui.readout(gd, 'Population avg. colour', '');
-const roPop = ui.readout(gd, 'Living bugs', String(N_POP));
+const roPop = ui.readout(gd, 'Living bugs', String(N_SEED));
 const roEaten = ui.readout(gd, 'Bugs eaten', '0');
 
-const foot = ui.footer('Birds spot the bugs that <b>stand out against the ground</b> and eat them; the survivors keep breeding, so the population steadily drifts toward camouflage.');
+const foot = ui.footer('Three <b>identical</b> bugs start the colony — every colour appears by <b>mutation at birth</b>. Birds eat the bugs that <b>stand out against the ground</b>, so the population drifts toward camouflage.');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
 
 const { canvas, ctx, W, H } = SimCanvas();

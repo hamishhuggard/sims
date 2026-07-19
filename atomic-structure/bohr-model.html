@@ -50,8 +50,8 @@ const S = {
 
 const ui = SimUI({ back: '../index.html', title: 'Bohr Model', subtitle: "Electron shells and energy levels (1913) — drag to orbit, scroll to zoom" });
 
-const ge = ui.group('Element');
-ui.select(ge, 'Pick an element', ELEMENTS.map(e => ({ value: String(e.z), label: e.z + '. ' + e.name + ' (' + e.sym + ')' })), '11', v => { S.z = parseInt(v, 10); });
+const ge = ui.group('Electrons');
+ui.slider(ge, 'Number of electrons', { min: 1, max: 20, step: 1, value: 11, fmt: v => Math.round(v) }, v => { S.z = Math.round(v); });
 
 const gx = ui.group('Excite an electron');
 ui.buttons(gx, [
@@ -67,6 +67,7 @@ const gr = ui.group('Readings');
 const roName = ui.readout(gr, 'Element', '');
 const roProtons = ui.readout(gr, 'Protons', '');
 const roConfig = ui.readout(gr, 'Electron configuration', '');
+const roPhoton = ui.readout(gr, 'Photon for the next jump', '');
 
 const foot = ui.footer('');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
@@ -74,7 +75,9 @@ ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
 const { canvas, ctx, W, H } = SimCanvas();
 const eng = Engine3D(canvas, { dist: 15, yaw: 0.4, pitch: 0.5 });
 
-const SHELL_R = [1.3, 2.1, 2.8, 3.5];
+/* one more radius than shellConfig can ever fill, so there is always a drawn
+   empty shell above the outermost occupied one for an electron to jump to */
+const SHELL_R = [1.3, 2.1, 2.8, 3.5, 4.2];
 let electronPhases = []; // per (shell,index) phase offsets, rebuilt on element change
 let nucleusParticles = []; // fixed {x,y,z,color} per element, rebuilt on element change
 let lastZ = null;
@@ -138,36 +141,109 @@ function packNucleusPositions(count) {
   return selected;
 }
 
+/* small deterministic PRNG (mulberry32) so each element's nucleus looks
+   randomly mixed but is identical every time you come back to it */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
 function rebuildNucleus(z) {
   const nucCount = Math.min(24, z * 2);
   const protonTarget = Math.ceil(nucCount / 2);
   const positions = packNucleusPositions(nucCount);
+  /* Shuffle which lattice sites get protons vs neutrons, seeded on Z, so the
+     nucleus reads as a genuinely mixed cluster (not two clumps, and not a
+     mechanical alternation) while staying stable frame to frame. */
+  const flags = [];
+  for (let i = 0; i < nucCount; i++) flags.push(i < protonTarget);
+  const rnd = mulberry32(z * 2654435761);
+  for (let i = flags.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    const tmp = flags[i]; flags[i] = flags[j]; flags[j] = tmp;
+  }
   nucleusParticles = [];
-  // interleave protons/neutrons evenly through the fill order rather than
-  // grouping them, so the mix reads as a real nucleus, not two separate clumps
-  let protonsPlaced = 0;
   for (let i = 0; i < positions.length; i++) {
-    const wantProtonRatio = protonTarget / nucCount;
-    const useProton = protonsPlaced / (i + 1) < wantProtonRatio;
-    const p = positions[i];
+    const p = positions[i], isProton = flags[i];
     nucleusParticles.push({
       x: p[0], y: p[1], z: p[2],
-      color: useProton ? PROTON_COL : NEUTRON_COL, isProton: useProton
+      color: isProton ? PROTON_COL : NEUTRON_COL, isProton: isProton
     });
-    if (useProton) protonsPlaced++;
   }
 }
 
-/* excitation: one outer electron jumps out a shell, then falls back emitting a photon */
-let excitation = null; // { shellIdx, idx, t0, phase: 'up'|'down'|'photon' }
-let photon = null; // { t0, dir }
+/* ---- photon energy / colour ------------------------------------------------
+   Screened hydrogen-like estimate: the outer electron sees the nucleus plus
+   the inner electrons as a net charge of about +1, so E_n ≈ −13.6/n² eV.
+   That is exactly right for hydrogen and the right ballpark for an outer
+   electron in the other elements shown here. */
+function transitionEV(n) { // n → n+1 (n is the principal quantum number, 1-based)
+  return 13.6 * (1 / (n * n) - 1 / ((n + 1) * (n + 1)));
+}
+function evToNm(ev) { return 1239.84 / ev; }
+
+/* Approximate visible-spectrum colour for a wavelength in nm. Outside the
+   visible band we return a muted stand-in plus the band name, so a UV or IR
+   photon still reads as "light you can't see" rather than being mis-coloured. */
+function wavelengthColor(nm) {
+  if (nm < 380) return { hex: '#8b5cf6', highlight: '#ddd6fe', band: 'ultraviolet' };
+  if (nm > 700) return { hex: '#991b1b', highlight: '#fecaca', band: 'infrared' };
+  let r = 0, g = 0, b = 0;
+  if (nm < 440) { r = (440 - nm) / 60; b = 1; }
+  else if (nm < 490) { g = (nm - 440) / 50; b = 1; }
+  else if (nm < 510) { g = 1; b = (510 - nm) / 20; }
+  else if (nm < 580) { r = (nm - 510) / 70; g = 1; }
+  else if (nm < 645) { r = 1; g = (645 - nm) / 65; }
+  else { r = 1; }
+  const h = v => ('0' + Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16)).slice(-2);
+  return { hex: '#' + h(r) + h(g) + h(b), highlight: '#ffffff', band: 'visible' };
+}
+
+/* Scene-space wavelength of the drawn sine wave: a monotonic squash of the
+   real wavelength into something that reads on screen — high-energy photons
+   visibly bunch up, low-energy ones stretch out. */
+function drawnWavelength(nm) { return Math.max(0.16, Math.min(0.95, nm / 1600)); }
+
+/* A wavy polyline running from `from` to `to`, oscillating in +y (so it stays
+   readable at any camera yaw), with a sin envelope so the packet fades in and
+   out at its ends instead of stopping dead. */
+function sinePts(from, to, wavelength, amp) {
+  const d = v3.sub(to, from), L = v3.len(d);
+  if (L < 1e-6) return [from.slice()];
+  const dir = v3.mul(d, 1 / L);
+  const N = Math.max(24, Math.min(320, Math.round((L / wavelength) * 16)));
+  const pts = [];
+  for (let i = 0; i <= N; i++) {
+    const f = i / N, s = f * L;
+    const y = amp * Math.sin(Math.PI * f) * Math.sin((s / wavelength) * Math.PI * 2);
+    pts.push([from[0] + dir[0] * s, from[1] + dir[1] * s + y, from[2] + dir[2] * s]);
+  }
+  return pts;
+}
+
+/* excitation timeline (seconds since the button press) */
+const T_ABSORB = 0.9;   // incoming photon travels in
+const T_UP = T_ABSORB + 0.5;  // electron climbs to the empty shell
+const T_HOLD = T_UP + 0.6;    // sits there
+const T_DOWN = T_HOLD + 0.5;  // falls back, emitting
+
+/* excitation: one outer electron absorbs a photon, jumps to the next (empty)
+   shell, then falls back emitting a photon of the same energy */
+let excitation = null; // { shellIdx, idx, t0, angle, nm, col }
+let photon = null; // { t0, angle, nm, col } — the outgoing (emitted) one
 let simT = 0, lastT = 0;
 
 function triggerExcitation() {
   const shells = shellConfig(S.z);
   const outer = shells.length - 1;
   if (outer < 0 || shells[outer] < 1) return;
-  excitation = { shellIdx: outer, idx: 0, t0: simT };
+  const nm = evToNm(transitionEV(outer + 1));
+  const angle = (electronPhases[outer] ? electronPhases[outer][0] : 0) + simT * (0.5 / (outer + 1));
+  excitation = { shellIdx: outer, idx: 0, t0: simT, angle: angle, nm: nm, col: wavelengthColor(nm) };
 }
 
 function frame(tms) {
@@ -187,27 +263,40 @@ function frame(tms) {
   }
   if (S.labels) eng.label([0, -nucR - 0.4, 0], el.sym + ' nucleus (' + S.z + 'p)', { color: '#475569', size: 14, lift: 2 });
 
-  /* shells + electrons */
-  for (let s = 0; s < shells.length; s++) {
+  /* shells + electrons — every radius is drawn, occupied ones in blue and the
+     empty ones above them in light grey, so the jump has a visible destination */
+  for (let s = 0; s < SHELL_R.length; s++) {
     const r = SHELL_R[s];
+    const occupied = s < shells.length;
     if (S.showShells) {
-      eng.line(circlePts(r), { color: 'rgba(37,99,235,0.35)', width: 2 });
+      if (occupied) {
+        eng.line(circlePts(r), { color: 'rgba(37,99,235,0.35)', width: 2 });
+      } else {
+        eng.line(circlePts(r), { color: 'rgba(148,163,184,0.45)', width: 2, dash: [0.14, 0.14] });
+      }
+      if (excitation && excitation.shellIdx === s - 1 && simT - excitation.t0 >= T_ABSORB) {
+        eng.line(circlePts(r), { color: 'rgba(245,158,11,0.8)', width: 3, dash: [0.15, 0.12] });
+        if (S.labels) eng.label([r + 0.25, 0.3, 0], 'excited', { color: '#b45309', size: 12, lift: 1 });
+      }
     }
-    if (S.showElectrons) {
+    if (occupied && S.showElectrons) {
       for (let i = 0; i < shells[s]; i++) {
-        let phase = electronPhases[s][i] + simT * (0.5 / (s + 1));
+        const phase = electronPhases[s][i] + simT * (0.5 / (s + 1));
         let rr = r;
-        // animate the excited electron jumping out a shell and back
+        // animate the excited electron absorbing, jumping to the next shell, and falling back
         if (excitation && excitation.shellIdx === s && excitation.idx === i) {
           const age = simT - excitation.t0;
-          if (age < 0.5) {
-            rr = r + (SHELL_R[s + 1] || r + 0.9 - r) * 0 + (r * 0.35) * (age / 0.5);
-          } else if (age < 1.1) {
-            rr = r + r * 0.35;
-          } else if (age < 1.6) {
-            const f = (age - 1.1) / 0.5;
-            rr = r + r * 0.35 * (1 - f);
-            if (!photon) photon = { t0: simT, angle: phase };
+          const rTo = SHELL_R[s + 1];
+          if (age < T_ABSORB) {
+            rr = r;
+          } else if (age < T_UP) {
+            rr = r + (rTo - r) * ((age - T_ABSORB) / (T_UP - T_ABSORB));
+          } else if (age < T_HOLD) {
+            rr = rTo;
+          } else if (age < T_DOWN) {
+            const f = (age - T_HOLD) / (T_DOWN - T_HOLD);
+            rr = rTo - (rTo - r) * f;
+            if (!photon) photon = { t0: simT, angle: phase, nm: excitation.nm, col: excitation.col };
           } else {
             excitation = null;
           }
@@ -216,17 +305,46 @@ function frame(tms) {
         eng.sphere([x, 0, z], 0.15, ELECTRON_COL, { label: S.labels ? '−' : '', stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1.5 });
       }
     }
-    if (S.labels && S.showShells) eng.label([r + 0.25, 0, 0], 'n=' + (s + 1), { color: '#475569', size: 13, lift: 1 });
+    if (S.labels && S.showShells) {
+      eng.label([r + 0.25, 0, 0], 'n=' + (s + 1), { color: occupied ? '#475569' : '#94a3b8', size: 13, lift: 1 });
+    }
   }
 
-  /* outgoing photon */
+  /* incoming photon — a sine wave travelling in, absorbed by the electron */
+  if (excitation) {
+    const age = simT - excitation.t0;
+    if (age < T_ABSORB) {
+      const f = age / T_ABSORB;
+      const rShell = SHELL_R[excitation.shellIdx];
+      const FAR = rShell + 6.5, PACKET = 2.2;
+      const head = FAR - (FAR - rShell) * f;      // leading edge sweeps inward
+      const tail = head + PACKET;
+      const ca = Math.cos(excitation.angle), sa = Math.sin(excitation.angle);
+      const pts = sinePts([tail * ca, 0, tail * sa], [head * ca, 0, head * sa],
+        drawnWavelength(excitation.nm), 0.28);
+      eng.line(pts, { color: excitation.col.hex, width: 3 });
+      if (S.labels) {
+        const m = (head + tail) / 2;
+        eng.label([m * ca, 0.6, m * sa], 'photon in', { color: excitation.col.hex, size: 14, lift: 3 });
+      }
+    }
+  }
+
+  /* outgoing photon — the same energy radiated back out as a sine wave */
   if (photon) {
     const age = simT - photon.t0;
-    if (age < 1.0) {
-      const dist = 1.5 + age * 5;
-      const x = dist * Math.cos(photon.angle), z = dist * Math.sin(photon.angle);
-      eng.sphere([x, 0, z], 0.12, PHOTON_COL, { highlight: '#fde68a' });
-      if (S.labels) eng.label([x, 0.35, z], 'photon', { color: '#b45309', size: 14, lift: 2 });
+    if (age < 1.4) {
+      const PACKET = 2.2;
+      const tail = 1.0 + age * 5.5;              // trailing edge leaves the atom
+      const head = tail + PACKET;
+      const ca = Math.cos(photon.angle), sa = Math.sin(photon.angle);
+      const pts = sinePts([tail * ca, 0, tail * sa], [head * ca, 0, head * sa],
+        drawnWavelength(photon.nm), 0.28);
+      eng.line(pts, { color: photon.col.hex, width: 3 });
+      if (S.labels) {
+        const m = (head + tail) / 2;
+        eng.label([m * ca, 0.6, m * sa], 'photon out', { color: photon.col.hex, size: 14, lift: 3 });
+      }
     } else {
       photon = null;
     }
@@ -234,12 +352,19 @@ function frame(tms) {
 
   eng.flush(ctx);
 
-  roName.set(el.name);
+  const nOuter = shells.length;
+  const ev = transitionEV(nOuter), nm = evToNm(ev), col = wavelengthColor(nm);
+
+  roName.set(el.name + ' (' + el.sym + ')');
   roProtons.set(String(S.z));
   roConfig.set(shells.join(', '));
+  roPhoton.set('<span style="color:' + col.hex + '">&#9679;</span> ' +
+    ev.toFixed(2) + ' eV &middot; ' + Math.round(nm) + ' nm (' + col.band + ')');
 
   foot.set("Bohr's model (1913): electrons occupy <b>fixed shells</b> (energy levels) around the nucleus &mdash; " +
-    el.sym + ' is ' + shells.join('-') + '. Jumping to a higher shell absorbs energy; falling back releases it as a <b>photon of light</b>.');
+    el.name + ' (' + el.sym + ', ' + S.z + ' electrons) is ' + shells.join('-') +
+    '. Jumping n=' + nOuter + '&rarr;' + (nOuter + 1) + ' <b>absorbs</b> a ' + Math.round(nm) +
+    '&nbsp;nm photon; falling back <b>emits</b> one of the same energy.');
 
   requestAnimationFrame(frame);
 }

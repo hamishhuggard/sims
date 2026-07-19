@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simple Pendulum — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/theme.js"></script>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', ACCENT = '#2563eb', GHOST = '#ea580c', V_COL = '#16a34a';
+const STRING_COL = '#475569', ARC_COL = '#94a3b8';
+
+const SCALE = 1.2;        // scene units per metre
+const Y_PIVOT = 2.8;
+
+const S = {
+  L: 1.0, mass: 1.0, g: 9.81, amp: 15,     // amp in degrees
+  compare: 'none',                          // none | mass | amp
+  running: true,
+  showArc: true, showTrail: true, showGraph: true, showRig: true, labels: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Simple Pendulum', subtitle: '$T = 2\\pi\\sqrt{L/g}$ — what really changes the period — drag to orbit, scroll to zoom' });
+
+const gp = ui.group('The pendulum');
+const sL = ui.slider(gp, 'Length L', { min: 0.2, max: 4, step: 0.05, value: 1, fmt: v => v.toFixed(2) + ' m' }, v => { S.L = v; resetAll(); });
+// mass changes live, mid-swing — the whole point is that nothing about the timing changes
+const sM = ui.slider(gp, 'Bob mass m', { min: 0.2, max: 10, step: 0.2, value: 1, fmt: v => v.toFixed(1) + ' kg' }, v => {
+  S.mass = v;
+  if (P) P.m = v;
+  if (Q) Q.m = (S.compare === 'mass') ? v * 4 : v;
+});
+const sA = ui.slider(gp, 'Start amplitude θ₀', { min: 2, max: 90, step: 1, value: 15, fmt: v => v.toFixed(0) + '°' }, v => { S.amp = v; resetAll(); });
+
+const gg = ui.group('Gravity');
+ui.segment(gg, null, [
+  { value: '1.62', label: 'Moon' },
+  { value: '9.81', label: 'Earth' },
+  { value: '24.79', label: 'Jupiter' }
+], '9.81', v => { setG(parseFloat(v)); });
+const sG = ui.slider(gg, 'Gravity g', { min: 1, max: 26, step: 0.01, value: 9.81, fmt: v => v.toFixed(2) + ' m/s²' }, v => { S.g = v; resetAll(); });
+
+const gc = ui.group('Second pendulum (compare!)');
+ui.segment(gc, null, [
+  { value: 'none', label: 'Off' },
+  { value: 'mass', label: '4× the mass' },
+  { value: 'amp', label: 'Big amplitude' }
+], 'none', v => { S.compare = v; resetAll(); });
+
+const gv = ui.group('Show / hide');
+ui.toggle(gv, 'Angle arc', true, v => S.showArc = v, { swatch: ARC_COL });
+ui.toggle(gv, 'Bob trail', true, v => S.showTrail = v);
+ui.toggle(gv, 'Displacement–time graph', true, v => S.showGraph = v, { swatch: ACCENT });
+ui.toggle(gv, 'Support rig', true, v => S.showRig = v);
+ui.toggle(gv, 'Labels', true, v => S.labels = v);
+
+ui.buttons(gv, [
+  { label: '⏯ Pause / run', onClick: () => { S.running = !S.running; } },
+  { label: '⟲ Release again', onClick: () => resetAll() }
+]);
+
+const gr = ui.group('Readings');
+const roTm = ui.readout(gr, 'Measured period $T$', '');
+const roTt = ui.readout(gr, 'Theory $2\\pi\\sqrt{L/g}$', '');
+const roD = ui.readout(gr, 'Difference', '');
+const roT2 = ui.readout(gr, 'Second pendulum $T$', '—');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 13, yaw: 0.35, pitch: 0.2 });
+
+function setG(g) { S.g = g; sG.set(g); }
+
+/* ---------- the true pendulum ODE: θ'' = −(g/L) sin θ (no small-angle fudge) ---------- */
+function makeP(L, m, ampDeg, z, color) {
+  return { L, m, amp: ampDeg * Math.PI / 180, theta: ampDeg * Math.PI / 180, omega: 0,
+           z, color, lastCross: null, T: null, trail: [], samples: [] };
+}
+function deriv(th, om, L, g) { return [om, -(g / L) * Math.sin(th)]; }
+function step(p, dt, g) {
+  const n = 8, h = dt / n;
+  for (let i = 0; i < n; i++) {
+    const [k1a, k1b] = deriv(p.theta, p.omega, p.L, g);
+    const [k2a, k2b] = deriv(p.theta + h / 2 * k1a, p.omega + h / 2 * k1b, p.L, g);
+    const [k3a, k3b] = deriv(p.theta + h / 2 * k2a, p.omega + h / 2 * k2b, p.L, g);
+    const [k4a, k4b] = deriv(p.theta + h * k3a, p.omega + h * k3b, p.L, g);
+    p.theta += h / 6 * (k1a + 2 * k2a + 2 * k3a + k4a);
+    p.omega += h / 6 * (k1b + 2 * k2b + 2 * k3b + k4b);
+  }
+}
+
+let simT = 0, P = null, Q = null;
+function resetAll() {
+  simT = 0;
+  P = makeP(S.L, S.mass, S.amp, 0, ACCENT);
+  if (S.compare === 'mass') Q = makeP(S.L, S.mass * 4, S.amp, 1.5, GHOST);
+  else if (S.compare === 'amp') Q = makeP(S.L, S.mass, Math.max(S.amp + 40, 75), 1.5, GHOST);
+  else Q = null;
+}
+resetAll();
+
+/* period from successive upward zero-crossings of θ — a real measurement, not the formula */
+function measure(p, prevTheta) {
+  if (prevTheta < 0 && p.theta >= 0 && p.omega > 0) {
+    if (p.lastCross !== null) {
+      const T = simT - p.lastCross;
+      p.T = p.T === null ? T : p.T * 0.6 + T * 0.4;
+    }
+    p.lastCross = simT;
+  }
+}
+
+function bobPos(p) {
+  return [p.L * SCALE * Math.sin(p.theta), Y_PIVOT - p.L * SCALE * Math.cos(p.theta), p.z];
+}
+
+function drawPendulum(p) {
+  const b = bobPos(p);
+  if (S.showTrail && p.trail.length > 1) eng.line(p.trail, { color: lighten(p.color, 0.55), width: 2.5 });
+  if (S.showArc) {
+    const pts = [];
+    for (let i = 0; i <= 40; i++) {
+      const a = -p.amp + (i / 40) * 2 * p.amp;
+      pts.push([p.L * SCALE * Math.sin(a), Y_PIVOT - p.L * SCALE * Math.cos(a), p.z]);
+    }
+    eng.line(pts, { color: ARC_COL, width: 2, dash: [5, 5] });
+    eng.line([[0, Y_PIVOT, p.z], [0, Y_PIVOT - p.L * SCALE, p.z]], { color: ARC_COL, width: 1.5, dash: [3, 5] });
+  }
+  eng.line([[0, Y_PIVOT, p.z], b], { color: STRING_COL, width: 4 });
+  const r = 0.16 * Math.cbrt(p.m);
+  eng.sphere(b, r, p.color, { stroke: INK, strokeWidth: 2 });
+  if (S.labels) eng.label(b, (p.m).toFixed(1) + ' kg', { color: p.color, size: 15, dy: -0.1, lift: 2 });
+  return b;
+}
+
+/* ---------- displacement–time graph (2D overlay, bottom-left) ---------- */
+function drawGraph() {
+  const gw = Math.min(440, W() * 0.42), gh = 190;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  const mx = gx + 46, mw = gw - 62, my = gy + 16, mh = gh - 34;
+  const midY = my + mh / 2;
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx, midY); ctx.lineTo(mx + mw, midY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.stroke();
+  Draw.label(ctx, 'θ', gx + 28, my + 10, { size: 15, color: '#475569' });
+  Draw.label(ctx, '0', mx - 12, midY, { size: 13, color: '#475569' });
+  Draw.label(ctx, 'time →', mx + mw - 28, gy + gh - 10, { size: 13, color: '#475569' });
+
+  const span = 8, deg = 95;
+  const plot = p => {
+    ctx.strokeStyle = p.color; ctx.lineWidth = 3.5; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let started = false;
+    for (const s of p.samples) {
+      const age = simT - s.t;
+      if (age > span) continue;
+      const x = mx + mw - (age / span) * mw;
+      const y = midY - Math.max(-mh / 2 + 3, Math.min(mh / 2 - 3, (s.a * 180 / Math.PI) / deg * (mh / 2)));
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  };
+  if (Q) plot(Q);
+  plot(P);
+}
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+
+  if (S.running) {
+    simT += dt;
+    for (const p of [P, Q]) {
+      if (!p) continue;
+      const prev = p.theta;
+      step(p, dt, S.g);
+      measure(p, prev);
+      p.samples.push({ t: simT, a: p.theta });
+      if (p.samples.length > 1500) p.samples.splice(0, p.samples.length - 1500);
+      p.trail.push(bobPos(p));
+      if (p.trail.length > 90) p.trail.splice(0, p.trail.length - 90);
+    }
+  }
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  if (S.showRig) {
+    eng.box([0, Y_PIVOT + 0.12, 0.75], 0.12, 0.08, 1.55, '#94a3b8', { stroke: INK, strokeWidth: 2 });
+    eng.box([0, Y_PIVOT * 0.5 - 0.2, 2.1], 0.1, Y_PIVOT * 0.5 + 0.35, 0.1, '#94a3b8', { stroke: INK, strokeWidth: 2 });
+    eng.box([0, -0.62, 2.1], 0.6, 0.08, 0.5, '#94a3b8', { stroke: INK, strokeWidth: 2 });
+  }
+  eng.sphere([0, Y_PIVOT, 0], 0.09, '#334155', { stroke: INK, strokeWidth: 1.5 });
+
+  if (Q) drawPendulum(Q);
+  drawPendulum(P);
+  if (S.labels) eng.label([P.L * SCALE * 0.6, Y_PIVOT - P.L * SCALE * 0.5, -0.5], 'L = ' + S.L.toFixed(2) + ' m',
+    { color: STRING_COL, size: 16, lift: 2 });
+
+  eng.flush(ctx);
+  if (S.showGraph) drawGraph();
+
+  const Tth = 2 * Math.PI * Math.sqrt(S.L / S.g);
+  roTt.set(Tth.toFixed(3) + ' s');
+  roTm.set(P.T === null ? 'measuring…' : P.T.toFixed(3) + ' s');
+  roD.set(P.T === null ? '—' : ((P.T - Tth) / Tth * 100).toFixed(1) + ' %');
+  roT2.set(Q ? (Q.T === null ? 'measuring…' : Q.T.toFixed(3) + ' s') : '—');
+
+  if (S.compare === 'mass') {
+    foot.set('Both bobs have the same $L$ — the orange one is <b>4× heavier</b> and they stay in step. <b>Mass does not affect the period:</b> $T = 2\\pi\\sqrt{L/g}$ has no $m$ in it.');
+  } else if (S.compare === 'amp') {
+    foot.set('Same $L$, same $m$ — only the <b>amplitude</b> differs. For small swings they match, but a wide swing runs <b>slightly slow</b>: $T = 2\\pi\\sqrt{L/g}$ is only an approximation.');
+  } else {
+    foot.set('<b>$T = 2\\pi\\sqrt{L/g}$</b> — period depends on <b>length</b> and <b>gravity</b> only. Quadruple $L$ to double $T$.');
+  }
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
