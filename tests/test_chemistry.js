@@ -29,7 +29,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     ok(await page.eval("swarm.count('H2O') > 0"), "ph-scale: water molecules present");
     for (const ph of [1, 13]) {
       for (const labelled of [true, false]) {
-        for (const ind of ["none", "universal", "red-litmus", "blue-litmus", "phenolphthalein"]) {
+        for (const ind of ["none", "universal", "litmus", "phenolphthalein"]) {
           await page.eval(`S.ph = ${ph}; S.labelledIons = ${labelled}; S.indicator = '${ind}'; frame(performance.now()); true`);
         }
       }

@@ -49,7 +49,7 @@ function classify(ph) {
 
 const S = {
   ph: 7,
-  indicator: 'none', // none | universal | red-litmus | blue-litmus | phenolphthalein
+  indicator: 'none', // none | universal | litmus | phenolphthalein
   showH: true, showOH: true, showWater: true, showBar: true, labels: true,
   labelledIons: false, // false = accurate molecule models (bare H+, bonded O-H for OH-); true = simple labelled spheres
   sizeMul: 1, countMul: 1, speed: 1
@@ -58,23 +58,29 @@ const S = {
 const ui = SimUI({ back: '../index.html', title: 'pH & Indicators', subtitle: 'Acids release H⁺, bases release OH⁻ — drag to orbit, scroll to zoom' });
 
 const gs = ui.group('Substance');
-ui.select(gs, 'Pick a substance', SUBSTANCES.map(s => ({ value: s.label, label: s.label + ' (pH ' + s.ph + ')' })), 'Pure water', v => {
+const CUSTOM_PH = '__custom__';
+let syncingPH = false;
+const substanceOptions = [{ value: CUSTOM_PH, label: 'Custom pH' }]
+  .concat(SUBSTANCES.map(s => ({ value: s.label, label: s.label + ' (pH ' + s.ph + ')' })));
+const substanceSelect = ui.select(gs, 'Pick a substance', substanceOptions, 'Pure water', v => {
+  if (syncingPH) return;
   const sub = SUBSTANCES.find(s => s.label === v);
-  if (sub) phSlider.set(sub.ph);
+  if (sub) { syncingPH = true; phSlider.set(sub.ph); syncingPH = false; }
 });
-const phSlider = ui.slider(gs, 'pH', { min: 0, max: 14, step: 0.5, value: 7, fmt: v => v.toFixed(1) }, v => S.ph = v);
+const phSlider = ui.slider(gs, 'pH', { min: 0, max: 14, step: 0.5, value: 7, fmt: v => v.toFixed(1) }, v => {
+  S.ph = v;
+  if (!syncingPH) { syncingPH = true; substanceSelect.set(CUSTOM_PH); syncingPH = false; }
+});
 
 const gi = ui.group('Indicator');
 ui.segment(gi, null, [
   { value: 'none', label: 'None' },
   { value: 'universal', label: 'Universal' },
-  { value: 'red-litmus', label: 'Red litmus' },
-  { value: 'blue-litmus', label: 'Blue litmus' },
+  { value: 'litmus', label: 'Litmus' },
   { value: 'phenolphthalein', label: 'Phenolphthalein' }
 ], 'none', v => S.indicator = v);
 
 const gp = ui.group('Particles');
-ui.toggle(gp, 'Labelled spheres (vs molecule models)', false, v => S.labelledIons = v);
 ui.slider(gp, 'Particle size', { min: 0.4, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.sizeMul = v);
 ui.slider(gp, 'Number of particles', { min: 0.3, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.countMul = v);
 ui.slider(gp, 'Simulation speed', { min: 0, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + '×' }, v => S.speed = v);
@@ -85,6 +91,7 @@ ui.toggle(gv, 'OH⁻ ions', true, v => S.showOH = v, { swatch: OH_COL });
 ui.toggle(gv, 'Water molecules', true, v => S.showWater = v, { swatch: '#94a3b8' });
 ui.toggle(gv, 'pH scale bar', true, v => S.showBar = v);
 ui.toggle(gv, 'Labels', true, v => S.labels = v);
+ui.toggle(gv, 'Labelled spheres (vs molecule models)', false, v => S.labelledIons = v);
 
 const gr = ui.group('Readings');
 const roPH = ui.readout(gr, 'pH', '');
@@ -139,6 +146,84 @@ function hexToRgba(hex, a) {
   return 'rgba(' + [(n >> 16) & 255, (n >> 8) & 255, n & 255].join(',') + ',' + a + ')';
 }
 
+/* Spectrum shown on the pH bar: the universal-indicator rainbow only makes
+   sense when no indicator (or "universal") is selected. Litmus and
+   phenolphthalein each have their own two-tone colour change, so the bar
+   should show *that* instead — a set of {ph, hex} stops to interpolate
+   between, or null to fall back to the discrete UNIVERSAL rainbow cells. */
+function phBarStops() {
+  if (S.indicator === 'phenolphthalein') {
+    return [[0, '#f8fafc'], [8.2, '#f8fafc'], [10, '#ec4899'], [14, '#ec4899']];
+  }
+  if (S.indicator === 'litmus') {
+    return [[0, '#e63946'], [6, '#e63946'], [7, '#2563eb'], [14, '#2563eb']];
+  }
+  return null;
+}
+function lerpHex(a, b, t) {
+  const na = parseInt(a.slice(1), 16), nb = parseInt(b.slice(1), 16);
+  const ar = (na >> 16) & 255, ag = (na >> 8) & 255, ab = na & 255;
+  const br = (nb >> 16) & 255, bg = (nb >> 8) & 255, bb = nb & 255;
+  return 'rgb(' + Math.round(ar + (br - ar) * t) + ',' + Math.round(ag + (bg - ag) * t) + ',' + Math.round(ab + (bb - ab) * t) + ')';
+}
+function colourAtPH(ph, stops) {
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [p0, c0] = stops[i], [p1, c1] = stops[i + 1];
+    if (ph <= p1) return lerpHex(c0, c1, p1 === p0 ? 0 : (ph - p0) / (p1 - p0));
+  }
+  return stops[stops.length - 1][1];
+}
+
+/* pH spectrum strip, sitting on the bench in front of the test tube, parallel
+   to the clamp stand's base (both run along x) — on the near (+z) side, i.e.
+   the side closest to the camera in the sim's starting orientation. */
+const PHBAR = { x0: -2.75, x1: 0.75, z: 1.9, zHalf: 0.32, y: BENCH + 0.025 };
+function drawPHBarScene() {
+  const stops = phBarStops();
+  const { x0, x1, z, zHalf, y } = PHBAR;
+  const len = x1 - x0;
+  const n = stops ? 30 : 15;
+  for (let i = 0; i < n; i++) {
+    const t0 = i / n, t1 = (i + 1) / n;
+    const xa = x0 + t0 * len, xb = x0 + t1 * len;
+    const col = stops ? colourAtPH(((t0 + t1) / 2) * 14, stops) : UNIVERSAL[i];
+    eng.poly([
+      [xa, y, z - zHalf], [xb, y, z - zHalf],
+      [xb, y, z + zHalf], [xa, y, z + zHalf]
+    ], col, { depthBias: -0.02 });
+  }
+  eng.line([[x0, y, z - zHalf], [x1, y, z - zHalf], [x1, y, z + zHalf], [x0, y, z + zHalf], [x0, y, z - zHalf]],
+    { color: INK, width: 3 });
+
+  /* numbers sit under the spectrum (near-camera side, same paper plane —
+     printed below the colour strip, not floating above it), painted flat
+     into the plane (not billboard sprites) so they skew in perspective
+     like real ink on the strip as the camera orbits */
+  const flatOpts = { right: [1, 0, 0], up: [0, 0, 1] };
+  const numZ = z + zHalf + 0.3;
+  for (let i = 0; i <= 14; i += 2) {
+    const x = x0 + (i / 14) * len;
+    eng.line([[x, y, z + zHalf], [x, y, z + zHalf + 0.12]], { color: INK, width: 2 });
+    eng.flatLabel([x, y, numZ], String(i), Object.assign({ color: INK, size: 0.22, weight: 700 }, flatOpts));
+  }
+
+  /* acid/neutral/alkali labels sit under the numbers, same paper plane */
+  const labZ = numZ + 0.32;
+  eng.flatLabel([x0 + (2 / 14) * len, y, labZ], 'ACID', Object.assign({ color: '#c81d25', size: 0.2, weight: 800 }, flatOpts));
+  eng.flatLabel([x0 + (7 / 14) * len, y, labZ], 'NEUTRAL', Object.assign({ color: '#3aa17e', size: 0.2, weight: 800 }, flatOpts));
+  eng.flatLabel([x0 + (12 / 14) * len, y, labZ], 'ALKALI', Object.assign({ color: '#31408f', size: 0.2, weight: 800 }, flatOpts));
+
+  /* a flat red triangle above the spectrum (far side, same paper plane),
+     pointing down at the current pH's position on the strip */
+  const px = x0 + (S.ph / 14) * len;
+  const triTipZ = z - zHalf - 0.03, triW = 0.16, triH = 0.26;
+  eng.poly([
+    [px, y, triTipZ],
+    [px - triW, y, triTipZ - triH],
+    [px + triW, y, triTipZ - triH]
+  ], '#e63946', { depthBias: -0.03 });
+}
+
 let lastT = 0;
 function frame(tms) {
   const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
@@ -153,9 +238,10 @@ function frame(tms) {
   // In "labelled spheres" mode both ions get a bigger, uniform, readable size.
   const hR = (S.labelledIons ? 0.09 : 0.018) * S.sizeMul;
   const oR = (S.labelledIons ? 0.09 : 0.05) * S.sizeMul;
+  const wR = (S.labelledIons ? 0.08 : 0.04) * S.sizeMul;
   swarm.want('H+', { n: S.showH ? nH : 0, radius: hR, speed: 0.8 });
   swarm.want('OH-', { n: S.showOH ? nOH : 0, radius: oR, speed: 0.7 });
-  swarm.want('H2O', { n: S.showWater ? Math.round(30 * S.countMul) : 0, radius: 0.04 * S.sizeMul, speed: 0.5 });
+  swarm.want('H2O', { n: S.showWater ? Math.round(30 * S.countMul) : 0, radius: wR, speed: 0.5 });
   swarm.step(dt * S.speed);
 
   ctx.clearRect(0, 0, W(), H());
@@ -185,7 +271,7 @@ function frame(tms) {
 
   /* H2O : small background molecules (bent ball-and-stick in molecule mode) */
   for (const pt of swarm.list('H2O')) {
-    if (S.labelledIons) eng.sphere(pt.p, 0.04 * S.sizeMul, '#cbd5e1');
+    if (S.labelledIons) eng.sphere(pt.p, wR, '#cbd5e1', S.labels ? { label: 'H₂O', labelColor: INK } : {});
     else drawMolecule(eng, pt.p, pt.v, MOL_H2O, { scale: S.sizeMul });
   }
 
@@ -209,28 +295,32 @@ function frame(tms) {
     }
   }
 
-  /* litmus paper strip, dipped into the beaker */
-  if (S.indicator === 'red-litmus' || S.indicator === 'blue-litmus') {
-    const isRed = S.indicator === 'red-litmus';
-    const turned = isRed ? (ph > 8.3) : (ph < 6.5); // red litmus turns blue in alkali; blue litmus turns red in acid
-    const baseCol = isRed ? '#e63946' : '#2563eb';
-    const changedCol = isRed ? '#2563eb' : '#e63946';
+  /* litmus paper strip — a flat rectangle of paper, dipped into the beaker.
+     Blue litmus paper: turns red in acid, stays blue in neutral/alkali.
+     Built as a camera-facing billboard quad (width along sideVec, the
+     screen-right direction) so it always reads as a flat strip, not an
+     edge-on line, from any orbit angle. */
+  if (S.indicator === 'litmus') {
+    const turned = ph < 6.5;
+    const baseCol = '#2563eb', changedCol = '#e63946';
     const sv = sideVec(eng);
     const sx = sv[0] * 0.55, sz = sv[2] * 0.55;
+    const halfW = 0.14;
     const stripTop = VESSEL.y1 + 0.6, stripBottom = VESSEL.y0 + 0.75;
     const submergedY = VESSEL.level - 0.05;
+    const corner = (y, sign) => [sx + sv[0] * halfW * sign, y, sz + sv[2] * halfW * sign];
     // dry (upper) half — always the original colour
-    eng.line([[sx, stripTop, sz], [sx, submergedY, sz]], { color: baseCol, width: 8 });
+    eng.poly([corner(stripTop, -1), corner(stripTop, 1), corner(submergedY, 1), corner(submergedY, -1)],
+      baseCol, { stroke: 'rgba(26,26,46,0.35)', strokeWidth: 1.5 });
     // submerged half — turns colour if past the threshold
-    eng.line([[sx, submergedY, sz], [sx, stripBottom, sz]], { color: turned ? changedCol : baseCol, width: 8 });
-    eng.line([[sx, stripTop, sz], [sx, stripBottom, sz]], { color: INK, width: 1, dash: [4, 4] });
-    if (S.labels) eng.label([sx, stripTop + 0.3, sz], isRed ? 'red litmus' : 'blue litmus', { color: '#475569', size: 15, lift: 2 });
+    eng.poly([corner(submergedY, -1), corner(submergedY, 1), corner(stripBottom, 1), corner(stripBottom, -1)],
+      turned ? changedCol : baseCol, { stroke: 'rgba(26,26,46,0.35)', strokeWidth: 1.5 });
+    if (S.labels) eng.label([sx, stripTop + 0.3, sz], 'litmus paper', { color: '#475569', size: 15, lift: 2 });
   }
 
-  eng.flush(ctx);
+  if (S.showBar) drawPHBarScene();
 
-  /* pH scale bar — 2D overlay above the footer */
-  if (S.showBar) drawPHBar();
+  eng.flush(ctx);
 
   roPH.set(ph.toFixed(1));
   const cls = classify(ph);
@@ -241,38 +331,6 @@ function frame(tms) {
   foot.set('pH ' + ph.toFixed(1) + ' — <b>' + cls + '</b>: ' + dominant + '. ' + kind);
 
   requestAnimationFrame(frame);
-}
-
-function drawPHBar() {
-  const barW = Math.min(760, W() * 0.75), barH = 46;
-  const bx = (W() - barW) / 2, by = H() - barH - 92;
-  const cellW = barW / 15;
-
-  for (let i = 0; i <= 14; i++) {
-    ctx.fillStyle = UNIVERSAL[i];
-    ctx.fillRect(bx + i * cellW, by, cellW, barH);
-  }
-  ctx.strokeStyle = INK; ctx.lineWidth = 3;
-  ctx.strokeRect(bx, by, barW, barH);
-  for (let i = 1; i <= 14; i++) {
-    ctx.beginPath(); ctx.moveTo(bx + i * cellW, by); ctx.lineTo(bx + i * cellW, by + barH); ctx.strokeStyle = 'rgba(26,26,46,0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
-  }
-  for (let i = 0; i <= 14; i += 2) {
-    Draw.label(ctx, String(i), bx + i * cellW + cellW / 2, by + barH + 16, { size: 14, color: INK, weight: 700 });
-  }
-  Draw.label(ctx, 'ACID', bx + 3.5 * cellW, by - 14, { size: 15, color: '#c81d25', weight: 800 });
-  Draw.label(ctx, 'NEUTRAL', bx + 7 * cellW, by - 14, { size: 15, color: '#3aa17e', weight: 800 });
-  Draw.label(ctx, 'ALKALI', bx + 10.5 * cellW, by - 14, { size: 15, color: '#31408f', weight: 800 });
-
-  // fat pointer at the current pH
-  const px = bx + S.ph * cellW;
-  ctx.beginPath();
-  ctx.moveTo(px - 12, by - 4);
-  ctx.lineTo(px + 12, by - 4);
-  ctx.lineTo(px, by + 10);
-  ctx.closePath();
-  ctx.fillStyle = INK;
-  ctx.fill();
 }
 
 window.BOOT_DONE = true;
