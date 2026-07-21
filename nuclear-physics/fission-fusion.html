@@ -20,8 +20,9 @@ const U_COL = '#a855f7', D_COL = '#2563eb', T_COL = '#16a34a', HE_COL = '#e63946
 const S = {
   mode: 'fission',
   chainReaction: true,
-  gridN: 10,
-  neutronCount: 13,
+  totalNuclei: 100,
+  gridSide: 1,
+  neutronCount: 1,
   labels: true, showEnergyBar: true
 };
 
@@ -35,8 +36,8 @@ ui.segment(gm, null, [
 
 const gf = ui.group('Fission');
 ui.toggle(gf, 'Chain reaction', true, v => S.chainReaction = v);
-ui.slider(gf, 'Number of nuclei', { min: 4, max: 14, step: 1, value: 10, fmt: v => String(v * v * 3) }, v => { S.gridN = v; resetScene(); });
-ui.slider(gf, 'Neutrons fired', { min: 1, max: 40, step: 1, value: 13, fmt: v => String(v) }, v => S.neutronCount = v);
+ui.slider(gf, 'Total nuclei', { min: 1, max: 200, step: 1, value: 100, fmt: v => String(v) }, v => { S.totalNuclei = v; resetScene(); });
+ui.slider(gf, 'Neutrons fired', { min: 1, max: 40, step: 1, value: 1, fmt: v => String(v) }, v => S.neutronCount = v);
 ui.buttons(gf, [
   { label: '⚛ Fire neutrons into the fuel', primary: true, onClick: fireNeutron },
   { label: '⟲ Reset', onClick: resetScene }
@@ -130,23 +131,23 @@ function drawCluster(c, cluster, alpha) {
   }
 }
 
-/* a chunk of fuel: three 10x10 hexagonal-close-packed sheets stacked on top
-   of each other (like cannonballs stacked in a crate) — each sheet's rows are
-   offset by half a spacing so neighbours touch, and each sheet nests into the
-   pockets of the one below it. NUC_R/LATTICE_S size the individual nuclei and
-   their spacing; everything else (fragment size, hit radius) is scaled off
-   NUC_R via SCALE so the whole picture stays proportional. */
+/* a chunk of fuel: a single hexagonal-close-packed sheet — rows are offset by
+   half a spacing so neighbours touch. NUC_R/LATTICE_S size the individual
+   nuclei and their spacing; everything else (fragment size, hit radius) is
+   scaled off NUC_R via SCALE so the whole picture stays proportional. */
 const NUC_R = 0.55, LATTICE_S = 1.3, SCALE = NUC_R / 0.8;
-function buildLatticeBlock(cols, rows, layers, s) {
+/* limit: stop as soon as this many points exist, then centre just that subset
+   (not the full cols x rows sheet) — so a small `limit` (down to a single
+   nucleus) stays centred on itself rather than sitting off in a corner of
+   the full sheet's centroid. */
+function buildLatticeBlock(cols, rows, s, limit) {
   const rowDx = s / 2, rowDz = s * Math.sqrt(3) / 2;
-  const layerDx = s / 2, layerDz = s * Math.sqrt(3) / 6; // nests each layer into the pockets below
-  const layerDy = s * Math.sqrt(2 / 3);
   const pts = [];
-  for (let L = 0; L < layers; L++) {
-    for (let j = 0; j < rows; j++) {
-      for (let i = 0; i < cols; i++) {
-        pts.push([i * s + (j % 2) * rowDx + L * layerDx, L * layerDy, j * rowDz + L * layerDz]);
-      }
+  outer:
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      pts.push([i * s + (j % 2) * rowDx, 0, j * rowDz]);
+      if (limit && pts.length >= limit) break outer;
     }
   }
   const c = pts.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]).map(v => v / pts.length);
@@ -160,8 +161,10 @@ function resetScene() {
   uraniumNuclei = []; freeNeutrons = []; fragments = []; flashes = [];
   reactionCount = 0; energyBarLevel = 0;
   if (S.mode === 'fission') {
-    eng.cam.dist = 3 * S.gridN;
-    const positions = buildLatticeBlock(S.gridN, S.gridN, 3, LATTICE_S);
+    const side = Math.max(1, Math.ceil(Math.sqrt(S.totalNuclei)));
+    S.gridSide = side;
+    eng.cam.dist = Math.max(8, 3 * side);
+    const positions = buildLatticeBlock(side, side, LATTICE_S, S.totalNuclei);
     for (const p of positions) uraniumNuclei.push({ x: p[0], y: p[1], z: p[2], alive: true, cluster: makeCluster(16, NUC_R, 6) });
   } else {
     eng.cam.dist = 13;
@@ -285,7 +288,7 @@ function frame(tms) {
       eng.sphere([fl.x, fl.y, fl.z], (0.8 + (1 - a) * 1.2) * SCALE, 'rgba(250,204,21,' + (a * 0.5).toFixed(2) + ')', { highlight: 'rgba(254,240,138,0.6)' });
       if (fl.life <= 0) flashes.splice(i, 1);
     }
-    if (S.labels && uraniumNuclei.some(u => u.alive)) eng.label([0, -1.8, S.gridN * 0.75], 'U-235 nuclei (a slice of the fuel) — protons red, neutrons grey', { color: '#475569', size: 14, lift: 2 });
+    if (S.labels && uraniumNuclei.some(u => u.alive)) eng.label([0, -1.8, S.gridSide * 0.75], 'U-235 nuclei (a slice of the fuel) — protons red, neutrons grey', { color: '#475569', size: 14, lift: 2 });
   } else {
     const d = fragments.find(f => f.type === 'D'), tt = fragments.find(f => f.type === 'T');
     if (d && tt) {

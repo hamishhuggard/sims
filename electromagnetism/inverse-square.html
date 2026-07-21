@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inverse Square Law — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/theme.js"></script>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', ACCENT = '#2563eb', SPARK = '#d97706', SLATE = '#475569', GOLD = '#facc15';
+
+const SOURCE_R = 0.35;      // radius of the emitting sphere
+const SQUARE_HALF = 0.6;    // fixed half-side of the detector square (its area never changes)
+const SPEED = 5;            // spark travel speed, units/s
+const MAX_DIST = 9.5;       // sparks vanish past this distance
+const R_MIN = 2, R_MAX = 8;
+const WINDOW = 2.5;         // rolling window (s) for the measured hit rate
+
+const S = {
+  rate: 100, sparkSize: 0.1, R: 4,
+  showSparks: true, showSphere: true, showSquare: true, showPlot: true
+};
+
+const ui = SimUI({ back: '../index.html', title: 'Inverse Square Law', subtitle: 'Why a spreading flux falls off as $1/r^2$ — drag to orbit, scroll to zoom' });
+
+const ge = ui.group('Emission');
+ui.slider(ge, 'Spark rate', { min: 20, max: 300, step: 10, value: 100, fmt: v => v.toFixed(0) + ' /s' }, v => S.rate = v);
+ui.slider(ge, 'Spark size', { min: 0.05, max: 0.25, step: 0.01, value: 0.1, fmt: v => v.toFixed(2) + ' m' }, v => S.sparkSize = v);
+
+const gr = ui.group('Sphere of consideration');
+ui.slider(gr, 'Radius r', { min: R_MIN, max: R_MAX, step: 0.1, value: 4, fmt: v => v.toFixed(1) + ' m' }, v => S.R = v);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Sparks', true, v => S.showSparks = v, { swatch: SPARK });
+ui.toggle(gs, 'Concentric sphere', true, v => S.showSphere = v, { swatch: ACCENT });
+ui.toggle(gs, 'Unit square (detector)', true, v => S.showSquare = v, { swatch: SLATE });
+ui.toggle(gs, 'Plot', true, v => S.showPlot = v);
+
+const gv = ui.group('Readings');
+const roTheory = ui.readout(gv, 'Theoretical rate', '');
+const roMeasured = ui.readout(gv, 'Measured rate', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W, H } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 16, yaw: 0.55, pitch: 0.35 });
+
+/* fixed tangent direction + local basis for the detector square */
+const N = v3.norm([0.55, 0.4, 0.75]);
+const T1 = v3.norm(v3.cross([0, 1, 0], N));
+const T2 = v3.cross(N, T1);
+const SQUARE_AREA = (2 * SQUARE_HALF) * (2 * SQUARE_HALF);
+
+function mixHex(a, b, t) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ar = (pa >> 16) & 255, ag = (pa >> 8) & 255, ab = pa & 255;
+  const br = (pb >> 16) & 255, bg = (pb >> 8) & 255, bb = pb & 255;
+  const r = Math.round(ar + (br - ar) * t), g = Math.round(ag + (bg - ag) * t), bl = Math.round(ab + (bb - ab) * t);
+  return '#' + [r, g, bl].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+function randomDir() {
+  let x, y, z, len2;
+  do { x = Math.random() * 2 - 1; y = Math.random() * 2 - 1; z = Math.random() * 2 - 1; len2 = x * x + y * y + z * z; } while (len2 > 1 || len2 < 1e-6);
+  const inv = 1 / Math.sqrt(len2);
+  return [x * inv, y * inv, z * inv];
+}
+
+function testHit(dir, R) {
+  const u = R * v3.dot(dir, T1);
+  const vv = R * v3.dot(dir, T2);
+  return v3.dot(dir, N) > 0 && Math.abs(u) <= SQUARE_HALF && Math.abs(vv) <= SQUARE_HALF;
+}
+
+function theoreticalRate(r) { return S.rate * SQUARE_AREA / (4 * Math.PI * r * r); }
+
+function circleRing(r, axis) {
+  const pts = [];
+  for (let i = 0; i <= 48; i++) {
+    const a = (i / 48) * Math.PI * 2;
+    if (axis === 'xz') pts.push([r * Math.cos(a), 0, r * Math.sin(a)]);
+    else if (axis === 'xy') pts.push([r * Math.cos(a), r * Math.sin(a), 0]);
+    else pts.push([0, r * Math.cos(a), r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+let sparks = [];
+let acc = 0;
+let flash = 0;
+let simT = 0;
+const hitTimes = [];
+const histSamples = [];
+let lastHistT = -1;
+
+function measuredRate() {
+  let n = 0;
+  for (let i = hitTimes.length - 1; i >= 0; i--) { if (simT - hitTimes[i] <= WINDOW) n++; else break; }
+  return n / WINDOW;
+}
+
+function stepPhysics(dt) {
+  acc += S.rate * dt;
+  while (acc >= 1) { sparks.push({ dir: randomDir(), dist: 0, prevDist: 0 }); acc -= 1; }
+
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const sp = sparks[i];
+    sp.prevDist = sp.dist;
+    sp.dist += SPEED * dt;
+    if (sp.prevDist < S.R && sp.dist >= S.R) {
+      if (testHit(sp.dir, S.R)) {
+        hitTimes.push(simT);
+        flash = 1;
+        sparks.splice(i, 1);
+        continue;
+      }
+    }
+    if (sp.dist > MAX_DIST) sparks.splice(i, 1);
+  }
+  while (hitTimes.length && simT - hitTimes[0] > WINDOW * 2) hitTimes.shift();
+
+  if (simT - lastHistT > 0.15) {
+    lastHistT = simT;
+    histSamples.push({ r: S.R, rate: measuredRate(), t: simT });
+    while (histSamples.length && simT - histSamples[0].t > 6) histSamples.shift();
+  }
+}
+
+function drawPlot() {
+  const gw = Math.min(430, W() * 0.42), gh = 190;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  const mx = gx + 46, mw = gw - 62, my = gy + 16, mh = gh - 46;
+  const yMax = theoreticalRate(R_MIN) * 1.15;
+  const xOf = r => mx + (r - R_MIN) / (R_MAX - R_MIN) * mw;
+  const yOf = rate => my + mh - Math.max(0, Math.min(1, rate / yMax)) * mh;
+
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx, my + mh); ctx.lineTo(mx + mw, my + mh); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.stroke();
+  Draw.label(ctx, 'hits/s', gx + 26, my - 4, { size: 14, color: '#475569' });
+  Draw.label(ctx, 'r (m) →', mx + mw - 34, gy + gh - 14, { size: 13, color: '#475569' });
+  Draw.label(ctx, R_MIN.toFixed(0), mx, gy + gh - 14, { size: 12, color: '#475569' });
+  Draw.label(ctx, R_MAX.toFixed(0), mx + mw - 8, gy + gh - 14, { size: 12, color: '#475569' });
+
+  /* theoretical dashed curve */
+  ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  ctx.setLineDash([7, 6]);
+  ctx.beginPath();
+  for (let i = 0; i <= 60; i++) {
+    const r = R_MIN + (R_MAX - R_MIN) * i / 60;
+    const x = xOf(r), y = yOf(theoreticalRate(r));
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* recent measured history trail */
+  if (histSamples.length > 1) {
+    ctx.beginPath();
+    let started = false;
+    for (const s of histSamples) {
+      const age = simT - s.t;
+      const x = xOf(s.r), y = yOf(s.rate);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(217,119,6,0.4)'; ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  /* current measured marker */
+  const mr = measuredRate();
+  const mx0 = xOf(S.R), my0 = yOf(mr);
+  ctx.strokeStyle = '#fcd34d'; ctx.lineWidth = 2; ctx.setLineDash([3, 4]);
+  ctx.beginPath(); ctx.moveTo(mx0, my + mh); ctx.lineTo(mx0, my0); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = SPARK;
+  ctx.beginPath(); ctx.arc(mx0, my0, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 1.5; ctx.stroke();
+}
+
+let lastT = 0;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
+  simT += dt;
+  flash = Math.max(0, flash - dt * 4);
+
+  stepPhysics(dt);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+
+  /* faint floor grid for depth */
+  const FLOOR_Y = -R_MAX - 2, BOUND = 12;
+  for (let g = -BOUND; g <= BOUND + 0.01; g += 3) {
+    eng.line([[g, FLOOR_Y, -BOUND], [g, FLOOR_Y, BOUND]], { color: '#eef2f7', width: 1.5 });
+    eng.line([[-BOUND, FLOOR_Y, g], [BOUND, FLOOR_Y, g]], { color: '#eef2f7', width: 1.5 });
+  }
+
+  /* concentric sphere of consideration */
+  if (S.showSphere) {
+    eng.sphere([0, 0, 0], S.R, 'rgba(37,99,235,0.09)', { stroke: ACCENT, strokeWidth: 1.5, highlight: 'rgba(37,99,235,0)' });
+    eng.line(circleRing(S.R, 'xz'), { color: '#93c5fd', width: 2 });
+    eng.line(circleRing(S.R, 'xy'), { color: '#93c5fd', width: 2 });
+    eng.line(circleRing(S.R, 'yz'), { color: '#93c5fd', width: 2 });
+    eng.label([0, S.R + 0.6, 0], 'r = ' + S.R.toFixed(1) + ' m', { color: ACCENT, size: 18, lift: 3 });
+  }
+
+  /* the detector square, tangent to the outer sphere */
+  const center = v3.mul(N, S.R);
+  if (S.showSquare) {
+    const p00 = v3.add(center, v3.add(v3.mul(T1, -SQUARE_HALF), v3.mul(T2, -SQUARE_HALF)));
+    const p10 = v3.add(center, v3.add(v3.mul(T1, SQUARE_HALF), v3.mul(T2, -SQUARE_HALF)));
+    const p11 = v3.add(center, v3.add(v3.mul(T1, SQUARE_HALF), v3.mul(T2, SQUARE_HALF)));
+    const p01 = v3.add(center, v3.add(v3.mul(T1, -SQUARE_HALF), v3.mul(T2, SQUARE_HALF)));
+    if (flash > 0.05) {
+      eng.sphere(center, 0.3 + flash * 0.6, 'rgba(250,204,21,' + (0.35 * flash).toFixed(3) + ')', { highlight: 'rgba(250,204,21,0)' });
+    }
+    eng.poly([p00, p10, p11, p01], mixHex(SLATE, GOLD, flash), { stroke: INK, strokeWidth: 2 });
+    eng.label(center, 'detector (1 m²)', { color: SLATE, size: 14, dy: -26, lift: 3 });
+  }
+
+  /* emitting sphere */
+  eng.sphere([0, 0, 0], SOURCE_R, ACCENT, { stroke: INK, strokeWidth: 2 });
+
+  /* sparks */
+  if (S.showSparks) {
+    for (const sp of sparks) {
+      const pos = v3.mul(sp.dir, SOURCE_R + sp.dist);
+      const posPrev = v3.mul(sp.dir, SOURCE_R + sp.prevDist);
+      eng.line([posPrev, pos], { color: SPARK, width: 3 });
+      eng.sphere(pos, S.sparkSize, SPARK, { stroke: null });
+    }
+  }
+
+  eng.flush(ctx);
+  if (S.showPlot) drawPlot();
+
+  const theory = theoreticalRate(S.R), measured = measuredRate();
+  roTheory.set(theory.toFixed(2) + ' /s');
+  roMeasured.set(measured.toFixed(2) + ' /s');
+  foot.set('Sparks fly out equally in <b>every direction</b> — the fixed-size square catches a shrinking share of them as $r$ grows: &nbsp;<b>rate $\\propto 1/r^2$</b>');
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

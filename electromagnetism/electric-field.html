@@ -122,7 +122,15 @@ function traceLines() {
   for (const c of chs) {
     // trace outward from + charges, backward from lone − charges
     if (c.q > 0) {
-      for (const d of SEED_DIRS) lines.push({ pts: trace(v3.add(c.p, v3.mul(d, 0.5)), 1), fwd: true });
+      // skip seeds aimed straight at another + charge: that ray just crawls to the
+      // shared neutral (saddle) point and stops, landing exactly on top of the
+      // mirror-image ray traced from the other charge — an ugly overlapping pair.
+      // The oblique seeds bow apart naturally (real field superposition) and are kept.
+      const others = chs.filter(o => o !== c && o.q > 0);
+      for (const d of SEED_DIRS) {
+        if (others.some(o => v3.dot(d, v3.norm(v3.sub(o.p, c.p))) > 0.9)) continue;
+        lines.push({ pts: trace(v3.add(c.p, v3.mul(d, 0.5)), 1), fwd: true });
+      }
     } else if (!chs.some(o => o.q > 0)) {
       for (const d of SEED_DIRS) lines.push({ pts: trace(v3.add(c.p, v3.mul(d, 0.5)), -1), fwd: false });
     }

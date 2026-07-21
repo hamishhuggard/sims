@@ -94,11 +94,13 @@ button.theme-toggle.floating {
   z-index: 20;
 }
 
-/* ---- control panel ---- */
-.sim-panel {
+/* ---- control panel + key-idea panel: shared chrome, opposite sides ----
+   .sim-panel is the settings/controls box (top-right). .sim-footer is the
+   key-idea/equation box (left, below the header — its `top` is set inline
+   by lib/ui.js since header height varies with title/subtitle length). Both
+   are collapsible boxes with an identical panel-head/panel-body pattern. */
+.sim-panel, .sim-footer {
   position: absolute;
-  top: 16px;
-  right: 16px;
   z-index: 10;
   width: 300px;
   max-height: calc(100vh - 32px);
@@ -108,7 +110,9 @@ button.theme-toggle.floating {
   border-radius: 16px;
   box-shadow: 6px 6px 0 rgba(26,26,46,0.15);
 }
-.sim-panel .panel-head {
+.sim-panel { top: 16px; right: 16px; }
+.sim-footer { left: 16px; }
+.sim-panel .panel-head, .sim-footer .panel-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -119,10 +123,10 @@ button.theme-toggle.floating {
   user-select: none;
   border-bottom: 3px solid var(--ink);
 }
-.sim-panel .panel-head > span:first-child { flex: 1; }
-.sim-panel.collapsed .panel-head { border-bottom: none; }
-.sim-panel.collapsed .panel-body { display: none; }
-.sim-panel .panel-body { padding: 6px 16px 14px; }
+.sim-panel .panel-head > span:first-child, .sim-footer .panel-head > span:first-child { flex: 1; }
+.sim-panel.collapsed .panel-head, .sim-footer.collapsed .panel-head { border-bottom: none; }
+.sim-panel.collapsed .panel-body, .sim-footer.collapsed .panel-body { display: none; }
+.sim-panel .panel-body, .sim-footer .panel-body { padding: 6px 16px 14px; }
 
 .ctl-group { margin-top: 12px; }
 .ctl-group > .group-title {
@@ -249,24 +253,9 @@ label.ctl-toggle .swatch {
   color: var(--accent);
 }
 
-/* info strip along the bottom (equations, hints) */
-.sim-footer {
-  position: absolute;
-  left: 50%;
-  bottom: 14px;
-  transform: translateX(-50%);
-  z-index: 10;
-  background: var(--paper);
-  border: 3px solid var(--ink);
-  border-radius: 14px;
-  box-shadow: 5px 5px 0 rgba(26,26,46,0.15);
-  padding: 10px 22px;
-  font-size: 20px;
-  font-weight: 700;
-  text-align: center;
-  max-width: min(92vw, 1000px);
-}
-.sim-footer .small { font-size: 15px; font-weight: 600; opacity: 0.7; }
+/* key-idea/equation content (bigger + bolder than control-panel body text) */
+.sim-footer .panel-body { font-size: 18px; font-weight: 700; }
+.sim-footer .small { font-size: 14px; font-weight: 600; opacity: 0.7; }
 .sim-footer sub, .sim-footer sup { font-size: 0.65em; }
 
 .hint {

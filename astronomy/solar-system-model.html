@@ -39,9 +39,8 @@ const KM_PER_UNIT_TRUE = 149600000 / AU_UNIT;
 const EARTH_PERIOD_S = 8; // sim-seconds for one Earth orbit at speed = 1
 
 /* Camera framing that keeps the whole system in shot at each end of the
-   distance slider (Engine3D clamps cam.dist to 2…80, so the true layout is
-   sized by AU_UNIT to fit inside that). */
-const CAM_DIST_CLASSROOM = 32, CAM_DIST_TRUE = 72;
+   distance slider (Engine3D clamps cam.dist to 0.5…200). */
+const CAM_DIST_CLASSROOM = 15, CAM_DIST_TRUE = 150;
 /* Smallest a body is ever drawn, in screen pixels. Without a floor the true
    scale planets are ~0.001 px and simply disappear — which is the lesson, but
    an empty canvas looks like a broken sim, so they stay as tiny dots and the

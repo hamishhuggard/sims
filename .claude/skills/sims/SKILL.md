@@ -172,7 +172,12 @@ Read the source of a finished sim for a worked example —
     `el.querySelectorAll('button')[i]` if you need to change a label later
     (e.g. a start/pause toggle button)
   - `ui.readout(group, label, initial)` → `{set(html)}` — big blue value
-  - `ui.footer(html)` → `{set(html)}` — the bottom equation strip
+  - `ui.footer(html)` → `{set(html)}` — the "Key idea" panel: a collapsible
+    box on the **left**, same chrome as the controls panel (click its
+    `panel-head` to collapse/expand), anchored just below the header —
+    `lib/ui.js` measures the header's actual rendered height (title +
+    subtitle vary per sim) and repositions on resize, so don't hardcode a
+    `top` offset for it yourself.
   - `ui.hint(text)` — small grey text bottom-left
 - `SimCanvas()` → `{canvas, ctx, W(), H()}` — DPR-corrected full-viewport
   canvas (`W()`/`H()` are CSS-pixel getters).
@@ -183,7 +188,9 @@ Read the source of a finished sim for a worked example —
 width:300px` — anything you draw at `W() - 300ish` will be hidden under it.
 Put 2D overlays (graphs, bars) in the **bottom-left** corner instead, above
 the hint text, matching `induction.html`'s graph and `combustion.html`'s
-energy bar.
+energy bar. The "Key idea" panel (`ui.footer`) no longer competes for this
+space — it moved off the bottom entirely (top-left, below the header) — so
+this bottom-left guidance is unaffected by footer content length.
 
 ### `lib/engine3d.js`
 

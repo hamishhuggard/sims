@@ -28,13 +28,24 @@ different year levels, so year isn't baked into the section heading.
 | DC Motor | `electromagnetism/motor.html` | F = BIL and the right-hand slap rule |
 | Charge in a Magnetic Field | `electromagnetism/charge-in-field.html` | F = Bqv → circular motion |
 | Induction & Generators | `electromagnetism/induction.html` | Rod on rails (V=BvL), AC/DC generators, Lenz's law |
+| Inverse Square Law | `electromagnetism/inverse-square.html` | Spark rate on a fixed detector square falls off as 1/r² as its distance from the source grows |
 
-These six predate this session's build and cover the standard NCEA Y12
+The first six predate this session's build and cover the standard NCEA Y12
 electromagnetism sequence (fields → circuits → magnetism → motor effect →
 circular motion in a field → induction/generators). Each follows the same
 show/hide + readout + footer-equation pattern as the chemistry sims below;
 see each page's own control panel for specifics rather than duplicating them
 here (they haven't needed pedagogy notes revisited since the original build).
+
+**Inverse Square Law** — a central source emits sparks in every direction at
+an adjustable rate; a translucent sphere marks the radius under
+consideration (slider-controlled), and a small fixed-area detector square
+tangent to that sphere flashes each time a spark lands on it. A live
+bottom-left graph plots the measured hit-rate against the theoretical 1/r²
+curve (dashed) as the radius slider moves. Good for: making the inverse
+square law tangible for light, radiation, and gravity — the same fixed
+"catcher" intercepts a shrinking fraction of the total output as it moves
+further from the source, not because the source weakens.
 
 ## Nuclear Physics
 
