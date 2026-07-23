@@ -79,6 +79,10 @@ reinvent the layout, copy a neighbouring section verbatim and edit it.
   - positive / acid: `#e63946` · negative / base: `#2563eb`
   - E-field `#ea580c` · B-field `#7c3aed` · force `#dc2626` · velocity `#16a34a`
   - conventional current `#d97706` · copper `#b45309`
+  - particles, in every sim they appear in: electron `#2563eb` (blue, `'−'`
+    label) · proton `#e63946` (`'+'`) · neutron `#94a3b8` · photon/energy
+    `#f59e0b`. Electrons stay blue even as current carriers in circuit sims
+    (a red/warm electron reads as positive charge).
 - Last line of the script, right before starting the animation loop:
   `window.BOOT_DONE = true;` — the headless test harness (and preview
   screenshotter) waits on this.
@@ -155,7 +159,33 @@ Read the source of a finished sim for a worked example —
 `electromagnetism/charge-in-field.html` is the shortest complete one;
 `electromagnetism/induction.html` shows a 2D graph overlay;
 `chemistry/ph-scale.html` and `chemistry/neutralisation.html` are the
-`lib/vessel.js` exemplars.
+`lib/vessel.js` exemplars; `electromagnetism/voltage-hill.html` is the
+exemplar for a **height-encodes-a-scalar landscape** (a circuit loop drawn as
+a 3D track whose `y` at each point *is* the electric potential — cells ramp up,
+resistors ramp down, translucent "curtain" polys from each raised segment to
+the ground give the box/prism look). It also demonstrates several reusable
+patterns worth copying:
+- **Animate on change by easing a driver scalar, not by tweening geometry.**
+  voltage-hill rebuilds all node heights every frame from one animated current
+  `Idisp` (`Idisp += (Itarget-Idisp)*(1-exp(-dt*k))`, `k≈6`); opening the switch
+  just changes `Itarget` and the whole potential profile flows to its new shape
+  for free. Initialise the driver to `null` and set it to the target on the
+  first frame so there's no start-up transient captured in previews.
+- **A "shadow" projection**: draw a flat 2D copy of the same run list on the
+  bench (`y = SHY`) under the 3D scene, linked by dashed vertical droplines at
+  the corners — a cheap, legible way to tie an abstract 3D view to the ordinary
+  diagram. A **view toggle** then just swaps which set (3D vs flat) is drawn and
+  re-aims the camera (`eng.cam.pitch/dist/target`), reusing one geometry builder.
+- **Reuse `circuit-3d.html`'s particle graph-walker** (`buildFlowGraph` +
+  weighted-round-robin `pickBranch`) for anything with a fork (here: parallel
+  resistors) — model the loop as directed runs in the carriers' travel
+  direction and let the walker split them by branch current. Draw electrons in
+  that direction and point the conventional-current `I` arrows the *opposite*
+  way (tag the two rail runs and reverse the arrow).
+- **Schematic component glyphs that must read as connected**: draw the
+  continuous wire `a→b` first, then lay the symbol (battery plates, etc.) on
+  top — leads that merely *approach* the symbol leave sub-pixel gaps that read
+  as "not connecting."
 
 ### `lib/ui.js`
 
@@ -197,10 +227,24 @@ this bottom-left guidance is unaffected by footer content length.
 Points are arrays `[x,y,z]`, +y up. `v3` has `add sub mul dot cross len norm
 lerp`. Colour utils `lighten(hex,t)` / `shade(hex,f)` are global.
 
-- `Engine3D(canvas, {dist, yaw, pitch})` → `eng`. Orbit (drag), pan
+- `Engine3D(canvas, {dist, yaw, pitch, focal})` → `eng`. Orbit (drag), pan
   (shift+drag, translates `eng.cam.target`), and zoom (wheel/pinch) are all
   wired automatically. Each frame: `eng.begin(W(),H())`, draw, `eng.flush(ctx)`
-  (painter's-algorithm depth sort of everything buffered).
+  (painter's-algorithm depth sort of everything buffered). `focal` defaults to
+  1.5; **pass a smaller `focal` (≈1.2) to soften perspective** when a scene has
+  wide depth so near objects don't render huge (voltage-hill.html).
+- **Set `eng.cam.target = [x,y,z]` right after construction to pan the scene as
+  a default view** — e.g. shift a wide scene right so it clears the top-left
+  "Key idea" panel, and lift `y` to the mid-height of a tall object so it sits
+  centred (voltage-hill.html sets `[-0.6, 1.3, 0]`). It's the same field
+  shift+drag mutates.
+- Gotcha: **a long axis viewed at a steep yaw recedes hard and crushes labels
+  along it together.** If measurement labels down one side collide no matter
+  how you nudge them, *lower the yaw toward side-on* (voltage-hill went 0.62→
+  0.48) so that axis lies more across the screen — cheaper and clearer than
+  fighting the collisions. As a second lever, offset colliding overlay labels
+  in **screen space** via `eng.label`'s `dx`/`dy` (pixels), pushing one group
+  up and its neighbour down.
 - `eng.line(pts, {color, width, dash:[a,b], arrow, midArrow, depthOverride})` —
   polyline, auto-split per segment for correct occlusion; widths scale with
   depth. `depthOverride` (see the sphere note) forces every segment to sort at
@@ -235,6 +279,60 @@ lerp`. Colour utils `lighten(hex,t)` / `shade(hex,f)` are global.
   back-to-front yourself) and the whole object sorts as one unit against
   everything else. Also give a big flat ground poly a large positive
   `depthBias` so it can never sort in front of things resting on it.
+- Gotcha: a **ring/orbit built in world space collapses to a straight line**
+  at some camera angles (its plane goes edge-on) — the old electron shells in
+  `nuclear-physics/fission-fusion.html` looked like skewers through the
+  nucleus. Fix: build the ring in a **camera-facing frame**, screen-right
+  crossed with screen-up tipped back towards the viewer, so it always projects
+  to an ellipse of a fixed aspect ratio:
+  ```js
+  const cy=Math.cos(eng.cam.yaw), sy=Math.sin(eng.cam.yaw);
+  const cp=Math.cos(eng.cam.pitch), sp=Math.sin(eng.cam.pitch);
+  const right=[cy,0,-sy], up=[-sp*sy,cp,-sp*cy], toward=[cp*sy,sp,cp*cy];
+  // ring plane = right × (cos(TILT)·up + sin(TILT)·toward), TILT≈1.04 → 2:1 ellipse
+  ```
+  And do **not** `depthOverride` such a ring: letting each segment sort on its
+  own depth is what makes the far half pass *behind* the thing it orbits,
+  which is the whole illusion. (Rotate the in-screen basis by a per-object
+  phase so a lattice of them isn't one repeated stamp.)
+- Gotcha: `eng.sphere`'s own `label` is sized `max(pr*1.1, 10)` — right for
+  `'+'`/`'−'`, far too big for a word like `'U-235'`. To write a name *across*
+  a ball, size it yourself from the projected radius
+  (`pr = r * q.s * eng.cam.focal * Math.min(W(),H()) / eng.cam.dist`) and call
+  `eng.label(c, text, { size: px / q.s, lift: r + 0.05 })`; bail out below
+  ~11px and fall back to a floating tag. Use **ink** text, not white —
+  `eng.label`'s white halo then reads as an outline instead of smearing a pale
+  ball. See `ballLabel()` in `nuclear-physics/fission-fusion.html`.
+- Gotcha: **a long straight line passed as just two points sorts on its
+  midpoint's depth**, so it paints straight over anything standing nearer than
+  that midpoint — a floor grid line spanning `x ∈ [-9, 9]` drew on top of a
+  source box sitting at `x = -6.6`. `eng.line` only splits *between* the points
+  you give it, so give it more: a `seg(a, b, n)` helper that lerps `n+1` points
+  makes each piece sort where it actually is. For a **floor** grid, skip that
+  and pin the whole thing behind everything with a big constant
+  `depthOverride` (`900`) — nothing is ever under the floor. See
+  `nuclear-physics/radiation-safety.html`.
+- Gotcha: **a small detail sitting proud of a big flat face** (an indicator
+  lamp on a detector panel, a button on a box) still sorts on its own depth,
+  and one placed low/off-centre is genuinely further from the camera than the
+  face's centre — so it silently disappears behind the panel while its
+  siblings higher up render fine. Pin all of them to the face's own projected
+  depth: `depthOverride: eng.project(faceCentre).depth - 0.4`. Recompute it
+  each frame and orbiting round the back still hides them correctly.
+- Gotcha: **parallel beams/tracks must be separated in `y`, not `z`.** Three
+  lanes offset in `z` collapse into one jumbled band at the usual camera yaw;
+  stacked vertically they stay distinct at every angle.
+- Gotcha: if a per-particle scalar like `fade` or `age` **multiplies drawn
+  geometry** (radius, ray length), a negative `dt` grows it without bound —
+  one bad frame and the screen fills with a giant sphere. Clamp at both ends:
+  `Math.max(0, Math.min(t - lastT, 0.04))`.
+- For **any wave/photon**, reuse `sinePts(from, to, wavelength, amp)` from
+  `atomic-structure/bohr-model.html`: a sine carrier under a
+  `Math.sin(Math.PI * f)` envelope, so the packet tapers to nothing at both
+  ends instead of stopping dead. That envelope is the whole reason it reads as
+  a photon rather than a scribble — and no arrowhead. Space emitted packets so
+  `gap × speed` comfortably exceeds the packet length, or the stream fuses into
+  one continuous wave.
 
 ### `lib/vessel.js` (chemistry only)
 
