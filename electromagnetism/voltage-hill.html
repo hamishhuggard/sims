@@ -189,10 +189,10 @@ function buildCircuit(Idisp) {
       { pts: [BR, NAtop], kind: 'wire', I: scale * I1nom },
       { pts: [NAtop, NBbot], kind: 'res', I: scale * I1nom, label: 'R₁', R: R1 },
       { pts: [NBbot, FR], kind: 'wire', I: scale * I1nom },
-      { pts: [TA2, NA2], kind: 'wire', I: scale * I2nom, phase: 0.3 },
-      { pts: [NA2, NB2], kind: 'res', I: scale * I2nom, label: 'R₂', R: R2, phase: 0.3 },
-      { pts: [NB2, TB2], kind: 'wire', I: scale * I2nom, phase: 0.3 },
-      { pts: [TB2, FR], kind: 'wire', I: scale * I2nom, phase: 0.3 }
+      { pts: [TA2, NA2], kind: 'wire', I: scale * I2nom },
+      { pts: [NA2, NB2], kind: 'res', I: scale * I2nom, label: 'R₂', R: R2 },
+      { pts: [NB2, TB2], kind: 'wire', I: scale * I2nom },
+      { pts: [TB2, FR], kind: 'wire', I: scale * I2nom }
     ];
   } else if (mode === 'one') {
     const L1 = ladder(W, zB, zF, Vbat, [-scale * Vbat], 'res');   // single ramp drops I·R = scale·Vbat
@@ -221,50 +221,73 @@ function buildCircuit(Idisp) {
   // circuit — each corner's own height (not a fixed reference), so the lines
   // reach all the way up to wherever the hill actually sits above them.
   const corners = [FL, BL, BR, FR, ...outerCorners];
-  return { runs, Vbat, Rtot, Inom, scale, mode, corners };
+
+  // loop topology for the electron placer: a single cycle, or (parallel) a
+  // single-file "spine" (merge→bottom→cells→top→fork) plus two branches.
+  const nCells = cellRuns.length, iTop = nCells, iR0 = nCells + 1, iBot0 = nCells + 1 + rightRuns.length;
+  let loop;
+  if (mode === 'parallel') {
+    loop = {
+      kind: 'fork',
+      spine: [iBot0, iBot0 + 1, iBot0 + 2, ...cellRuns.map((_, i) => i), iTop],  // FR → … → BR
+      A: [iR0 + 1, iR0 + 2, iR0 + 3],                                            // R₁ branch (BR→FR)
+      B: [iR0 + 0, iR0 + 4, iR0 + 5, iR0 + 6, iR0 + 7],                          // R₂ branch (BR→FR)
+      fA: Inom > 1e-9 ? I1nom / Inom : 0.5,   // fraction of loop current down each branch
+      fB: Inom > 1e-9 ? I2nom / Inom : 0.5
+    };
+  } else {
+    loop = { kind: 'single', order: runs.map((_, i) => i) };
+  }
+  return { runs, Vbat, Rtot, Inom, scale, mode, corners, loop };
 }
 
-/* ---------- electrons: graph walker (handles the parallel fork) ---------- */
-const nodeKey = p => p.map(x => Math.round(x * 100)).join(',');
-function buildFlowGraph(runs) {
-  const edges = runs.map((r, i) => ({ key: i, pts: r.pts, L: pathLen(r.pts), I: r.I, phase: r.phase || 0, fromKey: nodeKey(r.pts[0]), toKey: nodeKey(r.pts[r.pts.length - 1]) }));
-  const outFrom = new Map();
-  edges.forEach(e => { if (!outFrom.has(e.fromKey)) outFrom.set(e.fromKey, []); outFrom.get(e.fromKey).push(e); });
-  return { edges, outFrom };
+/* ---------- electrons: deterministic placement (even spacing, zipper fork) ----------
+   Electrons sit at a uniform spacing everywhere round the loop; on a parallel
+   branch they simply move slower (speed ∝ that branch's current), so the spacing
+   — and hence the density — stays uniform. At the fork each electron is routed
+   down one branch or the other in the current ratio (strict A,B,A,B when R₁=R₂),
+   and the two streams re-interleave at the merge like a zipper. Positions are
+   derived from ONE global phase each frame rather than integrated per particle,
+   so nothing drifts, clumps, or leaves gaps at the nodes. */
+const ESPC = 0.6;                                   // electron spacing (world units)
+let ePhase = 0;                                     // global loop phase, advances ∝ current
+function loopPolyline(runs, idxs) {                 // stitch runs into one continuous polyline
+  const pts = [];
+  idxs.forEach((id, i) => { const rp = runs[id].pts; pts.push(...(i === 0 ? rp : rp.slice(1))); });
+  return pts;
 }
-let particles = [], flowSig = null;
-const branchAcc = new Map();
-function pickBranch(nodeK, cands) {
-  let acc = branchAcc.get(nodeK); if (!acc) { acc = new Map(); branchAcc.set(nodeK, acc); }
-  const total = cands.reduce((s, e) => s + Math.max(e.I, 1e-6), 0);
-  let best = cands[0], bestScore = -Infinity;
-  for (const e of cands) { const v = (acc.get(e.key) || 0) + Math.max(e.I, 1e-6) / total; acc.set(e.key, v); if (v > bestScore) { bestScore = v; best = e; } }
-  acc.set(best.key, acc.get(best.key) - 1); return best;
+function eSphere(p) {
+  eng.sphere(v3.add(p, [0, 0.02, 0]), 0.14, CHG, { stroke: shade(CHG, 0.7), strokeWidth: 1.5, label: '−' });
 }
-function initParticles(edges) {
-  particles = []; const spacing = 0.6;
-  edges.forEach(e => { const n = Math.max(1, Math.floor(e.L / spacing)); for (let i = 0; i < n; i++) particles.push({ edgeIdx: e.key, s: i * spacing + e.phase }); });
-  branchAcc.clear();
-}
-function stepParticles(edges, outFrom, dt) {
-  for (const p of particles) {
-    let e = edges[p.edgeIdx];
-    p.s += dt * Math.min(e.I, 3) * 1.1;
-    let guard = 0;
-    while (p.s >= e.L && guard++ < 6) {
-      p.s -= e.L;
-      const cands = outFrom.get(e.toKey);
-      if (!cands || !cands.length) { p.s = 0; break; }
-      const next = cands.length === 1 ? cands[0] : pickBranch(e.toKey, cands);
-      p.edgeIdx = next.key; e = edges[p.edgeIdx];
-    }
+// weighted interleave (Bresenham tick): electron m goes to branch A in the ratio f
+const toA = (m, f) => Math.floor((m + 1) * f) > Math.floor(m * f);
+function placeBranch(pts, L, f, Ls, theta, want) {
+  if (f <= 1e-6 || L <= 1e-6) return;
+  // electron m crosses the fork at theta = m·ESPC + Ls, then advances along the
+  // branch at rate f, so its arc position is  b = f·(theta − m·ESPC − Ls) ∈ [0,L)
+  const mHi = Math.floor((theta - Ls) / ESPC);
+  const mLo = Math.ceil((theta - Ls - L / f) / ESPC);
+  for (let m = mLo; m <= mHi; m++) {
+    if (!want(m)) continue;
+    const b = f * (theta - m * ESPC - Ls);
+    if (b < 0 || b >= L - 1e-9) continue;           // fork owns b=0, merge owns b=L
+    eSphere(pathPoint(pts, b).p);
   }
 }
-function drawCharges(edges) {
-  for (const p of particles) {
-    const e = edges[p.edgeIdx]; const q = pathPoint(e.pts, p.s);
-    eng.sphere(v3.add(q.p, [0, 0.02, 0]), 0.14, CHG, { stroke: shade(CHG, 0.7), strokeWidth: 1.5, label: '−' });
+function drawCharges(runs, loop, theta) {
+  if (loop.kind === 'single') {                     // series/one: uniform current → uniform speed & spacing
+    const pts = loopPolyline(runs, loop.order), Ltot = pathLen(pts);
+    const N = Math.max(1, Math.round(Ltot / ESPC)), step = Ltot / N;   // exact divisor → seamless wrap
+    for (let i = 0; i < N; i++) eSphere(pathPoint(pts, ((theta + i * step) % Ltot + Ltot) % Ltot).p);
+    return;
   }
+  const sp = loopPolyline(runs, loop.spine), Ls = pathLen(sp);
+  const aP = loopPolyline(runs, loop.A), La = pathLen(aP);
+  const bP = loopPolyline(runs, loop.B), Lb = pathLen(bP);
+  const off = ((theta % ESPC) + ESPC) % ESPC;
+  for (let s = off; s < Ls - 1e-9; s += ESPC) eSphere(pathPoint(sp, s).p);  // spine owns [0, Ls); merge at s=0
+  placeBranch(aP, La, loop.fA, Ls, theta, m => toA(m, loop.fA));
+  placeBranch(bP, Lb, loop.fB, Ls, theta, m => !toA(m, loop.fA));
 }
 
 /* ---------- drawing ---------- */
@@ -434,23 +457,20 @@ function frame(tms) {
   const flatRuns = C.runs.map(r => ({ ...r, pts: r.pts.map(p => [p[0], SHY, p[2]]) }));
   const active = S.view === 'flat' ? flatRuns : C.runs;
 
-  const sig = S.cells + '|' + S.rmode;
-  const { edges, outFrom } = buildFlowGraph(active);
-  if (sig !== flowSig) { initParticles(edges); flowSig = sig; }
-  if (S.charges) stepParticles(edges, outFrom, dt);
+  if (S.charges) ePhase += dt * Math.min(Idisp, 3) * 1.1;   // rail phase advances ∝ current
 
   ctx.clearRect(0, 0, CW(), CH());
   eng.begin(CW(), CH());
   if (S.grid) drawGrid();
   if (S.view === 'flat') {
     drawFlatCircuit(flatRuns, null);
-    if (S.charges) drawCharges(edges);
+    if (S.charges) drawCharges(active, C.loop, ePhase);
     drawCurrent(flatRuns, C.scale);
   } else {
     if (S.shadow) drawFlatCircuit(flatRuns, C.corners);
     if (S.walls) drawWalls(C.runs);
     drawTrack(C.runs);
-    if (S.charges) drawCharges(edges);
+    if (S.charges) drawCharges(active, C.loop, ePhase);
     if (S.force) drawForce(C.runs);
     drawCurrent(C.runs, C.scale);
     if (S.heights) drawHeights(C);

@@ -176,12 +176,26 @@ patterns worth copying:
   the corners — a cheap, legible way to tie an abstract 3D view to the ordinary
   diagram. A **view toggle** then just swaps which set (3D vs flat) is drawn and
   re-aims the camera (`eng.cam.pitch/dist/target`), reusing one geometry builder.
-- **Reuse `circuit-3d.html`'s particle graph-walker** (`buildFlowGraph` +
-  weighted-round-robin `pickBranch`) for anything with a fork (here: parallel
-  resistors) — model the loop as directed runs in the carriers' travel
-  direction and let the walker split them by branch current. Draw electrons in
-  that direction and point the conventional-current `I` arrows the *opposite*
-  way (tag the two rail runs and reverse the arrow).
+- **Circuit carriers (electrons) — place them deterministically from one global
+  phase, don't integrate per particle.** voltage-hill draws electrons at a fixed
+  spacing `ESPC` by evaluating `pathPoint` along stitched-together run polylines
+  each frame, with a single `ePhase` that advances `∝ Idisp`. This keeps them
+  perfectly equispaced with no node gaps, drift, or clumping — the artifacts an
+  Euler integrator + stochastic branch-picker produce. The physics it encodes:
+  **carrier density is uniform everywhere** (same `n`, same wire cross-section),
+  so on a parallel branch the spacing stays the same and the electrons just move
+  *slower* (branch speed `= f·rail speed`, `f = I_branch/I_loop`) — not spread
+  further apart. Model the loop as a single-file **spine** (merge→…→fork) plus
+  the two **branches**; place the spine by phase, and route electron index `m`
+  down a branch by a Bresenham tick `floor((m+1)f) > floor(mf)` (strict A,B,A,B
+  when `R1=R2`, weighted otherwise) — that current-fraction weighting is exactly
+  what makes branch density come out uniform. In series/one mode the whole loop
+  is one cycle: `N = round(Ltot/ESPC)` electrons at `Ltot/N` spacing wrap
+  seamlessly. Runs must be oriented in the carriers' travel direction; point the
+  conventional-current `I` arrows the *opposite* way (tag the two rail runs and
+  reverse the arrow). (`circuit-3d.html` still uses the older per-particle
+  `buildFlowGraph`/`pickBranch` walker — fine for a single loop, but the
+  deterministic placer is what gives an even, permanent zipper at a fork.)
 - **Schematic component glyphs that must read as connected**: draw the
   continuous wire `a→b` first, then lay the symbol (battery plates, etc.) on
   top — leads that merely *approach* the symbol leave sub-pixel gaps that read
