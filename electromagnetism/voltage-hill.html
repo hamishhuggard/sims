@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voltage as Height — 3D</title>
+<link rel="stylesheet" href="../sim.css">
+</head>
+<body>
+<canvas id="sim"></canvas>
+<script src="../lib/theme.js"></script>
+<script src="../lib/ui.js"></script>
+<script src="../lib/engine3d.js"></script>
+<script>
+'use strict';
+const INK = '#1a1a2e', WIRE = '#475569', CUR = '#d97706', POS = '#e63946';
+const EMF_C = '#2563eb', RES_C = '#16a34a', RES2_C = '#9333ea', SWITCH_C = '#0891b2', FORCE = '#dc2626', CHG = '#b23a2e';
+const resColor = label => label === 'R₂' ? RES2_C : RES_C;
+const SHADOW = '#94a3b8';
+const H_PER_V = 0.7;              // world height units per volt
+const W = 4, zF = -3.5, zB = 3.5; // footprint: full width in x, front/back in z (depth widened)
+const BUF = 0.6, LAND = 0.45;    // flat wire buffer at each corner; flat landing between ramps
+const Y0 = 1.6, SHY = 0;         // hill base height above the flat "shadow" circuit; shadow plane
+const PAR_DX = 1.7;              // outward x-offset of the 2nd parallel branch
+const RES_LEAD = 0.2;             // fraction of a resistor run that's flat lead wire at each end (matches componentFlat)
+
+const S = {
+  cells: 3,                       // each cell adds +1 V, so V_battery = cells volts
+  R1: 6, R2: 12, rmode: 'series',
+  view: 'hill',
+  switchClosed: true,
+  charges: true, force: true, heights: true, walls: true,
+  shadow: true, oldResistor: false, grid: true
+};
+
+const ui = SimUI({
+  back: '../index.html',
+  title: 'Voltage as Height',
+  subtitle: 'Height = electric potential · electrons ride the loop, lifted +1 V by each cell and dropped by every resistor'
+});
+
+const gvw = ui.group('View');
+ui.segment(gvw, null, [
+  { value: 'hill', label: 'Voltage hill (3D)' },
+  { value: 'flat', label: 'Flat circuit (2D)' }
+], 'hill', v => { S.view = v; setCamera(v); });
+
+const gb = ui.group('Battery & resistors');
+ui.slider(gb, 'Cells  (each +1 V)', { min: 1, max: 6, step: 1, value: 3, fmt: v => v + (v > 1 ? ' cells' : ' cell') }, v => S.cells = v);
+ui.segment(gb, 'Resistors', [
+  { value: 'one', label: 'One' },
+  { value: 'series', label: 'Series' },
+  { value: 'parallel', label: 'Parallel' }
+], 'series', v => S.rmode = v);
+ui.slider(gb, 'R1 (Ω)', { min: 2, max: 24, step: 1, value: 6, fmt: v => v + ' Ω' }, v => S.R1 = v);
+ui.slider(gb, 'R2 (Ω)', { min: 2, max: 24, step: 1, value: 12, fmt: v => v + ' Ω' }, v => S.R2 = v);
+const swBtns = ui.buttons(gb, [{ label: '⏻ Open / close switch', onClick: () => { S.switchClosed = !S.switchClosed; } }]);
+
+const gs = ui.group('Show / hide');
+ui.toggle(gs, 'Electrons flowing', true, v => S.charges = v, { swatch: CHG });
+ui.toggle(gs, 'Force on charge (F)', true, v => S.force = v, { swatch: FORCE });
+ui.toggle(gs, 'Height labels', true, v => S.heights = v);
+ui.toggle(gs, 'Potential walls', true, v => S.walls = v, { swatch: 'linear-gradient(90deg,#2563eb,#16a34a)' });
+ui.toggle(gs, 'Flat circuit below (shadow)', true, v => S.shadow = v, { swatch: SHADOW });
+ui.toggle(gs, 'Old resistor symbol (zigzag)', false, v => S.oldResistor = v);
+ui.toggle(gs, 'Bench grid', true, v => S.grid = v);
+
+const gr = ui.group('Readings');
+const roVbat = ui.readout(gr, '$V_\\text{battery}$', '');
+const roI = ui.readout(gr, 'Current I', '');
+const roR = ui.readout(gr, 'Total resistance', '');
+
+const foot = ui.footer('');
+ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
+
+const { canvas, ctx, W: CW, H: CH } = SimCanvas();
+const eng = Engine3D(canvas, { dist: 20, yaw: 2.62, pitch: 0.46, focal: 1.2 });
+function setCamera(view) {
+  if (view === 'flat') { eng.cam.yaw = 2.62; eng.cam.pitch = 1.16; eng.cam.dist = 17; eng.cam.target = [0, SHY, 0]; }
+  else { eng.cam.yaw = 2.62; eng.cam.pitch = 0.46; eng.cam.dist = 20; eng.cam.target = [-0.2, 2.4, 0]; }
+}
+setCamera('hill');
+
+/* ---------- path helpers ---------- */
+function pathLen(pts) { let L = 0; for (let i = 1; i < pts.length; i++) L += v3.len(v3.sub(pts[i], pts[i - 1])); return L; }
+function pathPoint(pts, s) {
+  for (let i = 1; i < pts.length; i++) {
+    const d = v3.len(v3.sub(pts[i], pts[i - 1]));
+    if (s <= d) return { p: v3.lerp(pts[i - 1], pts[i], s / d), dir: v3.norm(v3.sub(pts[i], pts[i - 1])) };
+    s -= d;
+  }
+  const n = pts.length;
+  return { p: pts[n - 1], dir: v3.norm(v3.sub(pts[n - 1], pts[n - 2])) };
+}
+function subdiv(a, b, n) { const out = []; for (let i = 0; i <= n; i++) out.push(v3.lerp(a, b, i / n)); return out; }
+function subdivPath(pts, n) { const out = []; for (let i = 0; i < pts.length - 1; i++) out.push(...subdiv(pts[i], pts[i + 1], n).slice(i === 0 ? 0 : 1)); return out; }
+// flat lead -> sloped body -> flat lead, so the hill's slope spans exactly the
+// resistor symbol's width in the flat circuit (componentFlat's ls..le), not
+// the whole run between wire nodes.
+function resProfile(a, b) {
+  const a1 = v3.lerp(a, b, RES_LEAD); a1[1] = a[1];
+  const b1 = v3.lerp(a, b, 1 - RES_LEAD); b1[1] = b[1];
+  return [a, a1, b1, b];
+}
+function zigzag(a, b, zigs, amp) {
+  const dir = v3.norm(v3.sub(b, a)), perp = v3.norm(v3.cross(dir, [0, 1, 0])), L = v3.len(v3.sub(b, a));
+  const s0 = L * 0.16, s1 = L * 0.84, pts = [a, v3.add(a, v3.mul(dir, s0))];
+  for (let i = 0; i < zigs; i++) {
+    const t = s0 + (s1 - s0) * ((i + 0.5) / zigs);
+    pts.push(v3.add(v3.add(a, v3.mul(dir, t)), v3.mul(perp, (i % 2 ? -1 : 1) * amp)));
+  }
+  pts.push(v3.add(a, v3.mul(dir, s1)), b); return pts;
+}
+const midZ = (a, b) => (a[2] + b[2]) / 2;
+const yOf = v => Y0 + v * H_PER_V;
+
+/* ---------- geometry ----------
+   Runs are directed in the ELECTRON travel direction: up the cell escalator,
+   along the top rail, down through the resistors, along the bottom rail (past
+   the switch) and back. Heights = electric potential, recomputed every frame
+   from the animated current `Idisp`, so opening the switch smoothly flattens
+   the resistor drops and grows a cliff across the switch. */
+function ladder(x, zStart, zEnd, vStart, dropVs, kind) {
+  const steps = dropVs.length, dir = Math.sign(zEnd - zStart), span = Math.abs(zEnd - zStart);
+  const land = steps > 1 ? Math.min(LAND, (span - 2 * BUF) / (steps * 1.6)) : 0;
+  const rampLen = (span - 2 * BUF - (steps - 1) * land) / steps;
+  const nodes = [], kinds = []; let z = zStart, v = vStart;
+  nodes.push([x, yOf(v), z]);
+  z += dir * BUF; nodes.push([x, yOf(v), z]); kinds.push('wire');
+  for (let k = 0; k < steps; k++) {
+    v += dropVs[k]; z += dir * rampLen; nodes.push([x, yOf(v), z]); kinds.push(kind);
+    if (k < steps - 1) { z += dir * land; nodes.push([x, yOf(v), z]); kinds.push('wire'); }
+  }
+  z += dir * BUF; nodes.push([x, yOf(v), z]); kinds.push('wire');
+  return { nodes, kinds };
+}
+function ladderRuns(L, I, rampMetas) {
+  const runs = []; let ri = 0;
+  for (let i = 0; i < L.kinds.length; i++) {
+    const run = { pts: [L.nodes[i], L.nodes[i + 1]], kind: L.kinds[i], I };
+    if (L.kinds[i] !== 'wire') Object.assign(run, rampMetas[ri++] || {});
+    runs.push(run);
+  }
+  return runs;
+}
+
+function buildCircuit(Idisp) {
+  const cells = S.cells, Vbat = cells;          // each cell +1 V
+  const R1 = S.R1, R2 = S.R2, mode = S.rmode;
+  let Rtot, I1nom, I2nom;
+  if (mode === 'one') Rtot = R1;
+  else if (mode === 'parallel') { Rtot = 1 / (1 / R1 + 1 / R2); I1nom = Vbat / R1; I2nom = Vbat / R2; }
+  else Rtot = R1 + R2;
+  const Inom = Vbat / Rtot;
+  const scale = Inom > 1e-9 ? Idisp / Inom : 0;  // fraction of full current (0 = switch open)
+
+  // escalator: FL(0) → BL(Vbat), one +1 V ramp per cell
+  const Lc = ladder(-W, zF, zB, 0, Array(cells).fill(1), 'cell');
+  const FL = Lc.nodes[0], BL = Lc.nodes[Lc.nodes.length - 1];
+  const cellRuns = ladderRuns(Lc, Idisp, Array(cells).fill(0).map(() => ({ label: '+1 V' })));
+
+  const BR = [W, yOf(Vbat), zB];
+  let rightRuns, FR, resArrowsAtX = [];
+  if (mode === 'parallel') {
+    // top/bottom rails run straight through to R2's corner; R1 taps the rail
+    // at BR/FR (like a rectangle with a middle divider), instead of forking
+    // and rejoining mid-ramp.
+    const NAtop = [W, yOf(Vbat), zB - BUF];
+    const vBot = Vbat * (1 - scale);            // resistor-bottom potential (0 when closed)
+    const NBbot = [W, yOf(vBot), zF + BUF];
+    const TA2 = [W + PAR_DX, yOf(Vbat), zB], TB2 = [W + PAR_DX, yOf(vBot), zF];
+    const NA2 = [W + PAR_DX, yOf(Vbat), zB - BUF], NB2 = [W + PAR_DX, yOf(vBot), zF + BUF];
+    FR = [W, yOf(vBot), zF];
+    rightRuns = [
+      { pts: [BR, TA2], kind: 'wire', I: scale * I2nom },
+      { pts: [BR, NAtop], kind: 'wire', I: scale * I1nom },
+      { pts: [NAtop, NBbot], kind: 'res', I: scale * I1nom, label: 'R₁', R: R1 },
+      { pts: [NBbot, FR], kind: 'wire', I: scale * I1nom },
+      { pts: [TA2, NA2], kind: 'wire', I: scale * I2nom },
+      { pts: [NA2, NB2], kind: 'res', I: scale * I2nom, label: 'R₂', R: R2 },
+      { pts: [NB2, TB2], kind: 'wire', I: scale * I2nom },
+      { pts: [TB2, FR], kind: 'wire', I: scale * I2nom }
+    ];
+  } else if (mode === 'one') {
+    const L1 = ladder(W, zB, zF, Vbat, [-scale * Vbat], 'res');   // single ramp drops I·R = scale·Vbat
+    FR = L1.nodes[L1.nodes.length - 1];
+    rightRuns = ladderRuns(L1, Idisp, [{ label: 'R', R: R1 }]);
+  } else { // series
+    const L2 = ladder(W, zB, zF, Vbat, [-scale * (Vbat * R1 / Rtot), -scale * (Vbat * R2 / Rtot)], 'res');
+    FR = L2.nodes[L2.nodes.length - 1];
+    rightRuns = ladderRuns(L2, Idisp, [{ label: 'R₁', R: R1 }, { label: 'R₂', R: R2 }]);
+  }
+
+  rightRuns = rightRuns.map(r => r.kind === 'res' ? { ...r, pts: resProfile(r.pts[0], r.pts[r.pts.length - 1]) } : r);
+
+  // bottom rail with the switch: FR(vFR) → SWa → [switch cliff] → SWb(0) → FL(0)
+  const vFR = (FR[1] - Y0) / H_PER_V;            // resistor-bottom potential
+  const SWa = [0.6, yOf(vFR), zF], SWb = [-0.6, yOf(0), zF];
+  const bottomRuns = [
+    { pts: [FR, SWa], kind: 'wire', I: Idisp },
+    { pts: [SWa, SWb], kind: 'switch', I: Idisp, drop: vFR },
+    { pts: [SWb, FL], kind: 'wire', I: Idisp, rail: 'bottom' }
+  ];
+
+  const topRail = { pts: [BL, BR], kind: 'wire', I: Idisp, rail: 'top' };
+  const runs = [...cellRuns, topRail, ...rightRuns, ...bottomRuns];
+  return { runs, Vbat, Rtot, Inom, scale, mode };
+}
+
+/* ---------- electrons: graph walker (handles the parallel fork) ---------- */
+const nodeKey = p => p.map(x => Math.round(x * 100)).join(',');
+function buildFlowGraph(runs) {
+  const edges = runs.map((r, i) => ({ key: i, pts: r.pts, L: pathLen(r.pts), I: r.I, fromKey: nodeKey(r.pts[0]), toKey: nodeKey(r.pts[r.pts.length - 1]) }));
+  const outFrom = new Map();
+  edges.forEach(e => { if (!outFrom.has(e.fromKey)) outFrom.set(e.fromKey, []); outFrom.get(e.fromKey).push(e); });
+  return { edges, outFrom };
+}
+let particles = [], flowSig = null;
+const branchAcc = new Map();
+function pickBranch(nodeK, cands) {
+  let acc = branchAcc.get(nodeK); if (!acc) { acc = new Map(); branchAcc.set(nodeK, acc); }
+  const total = cands.reduce((s, e) => s + Math.max(e.I, 1e-6), 0);
+  let best = cands[0], bestScore = -Infinity;
+  for (const e of cands) { const v = (acc.get(e.key) || 0) + Math.max(e.I, 1e-6) / total; acc.set(e.key, v); if (v > bestScore) { bestScore = v; best = e; } }
+  acc.set(best.key, acc.get(best.key) - 1); return best;
+}
+function initParticles(edges) {
+  particles = []; const spacing = 0.6;
+  edges.forEach(e => { const n = Math.max(1, Math.floor(e.L / spacing)); for (let i = 0; i < n; i++) particles.push({ edgeIdx: e.key, s: i * spacing }); });
+  branchAcc.clear();
+}
+function stepParticles(edges, outFrom, dt) {
+  for (const p of particles) {
+    let e = edges[p.edgeIdx];
+    p.s += dt * Math.min(e.I, 3) * 1.1;
+    let guard = 0;
+    while (p.s >= e.L && guard++ < 6) {
+      p.s -= e.L;
+      const cands = outFrom.get(e.toKey);
+      if (!cands || !cands.length) { p.s = 0; break; }
+      const next = cands.length === 1 ? cands[0] : pickBranch(e.toKey, cands);
+      p.edgeIdx = next.key; e = edges[p.edgeIdx];
+    }
+  }
+}
+function drawCharges(edges) {
+  for (const p of particles) {
+    const e = edges[p.edgeIdx]; const q = pathPoint(e.pts, p.s);
+    eng.sphere(v3.add(q.p, [0, 0.02, 0]), 0.14, CHG, { stroke: shade(CHG, 0.7), strokeWidth: 1.5, label: '−' });
+  }
+}
+
+/* ---------- drawing ---------- */
+function drawGrid() {
+  const yv = SHY - 0.02, ext = 8, step = 1.5;
+  for (let x = -ext; x <= ext + 0.01; x += step) eng.line([[x, yv, -8], [x, yv, 8]], { color: '#e2e8f0', width: 1.5, depthOverride: 900 });
+  for (let z = -8; z <= 8 + 0.01; z += step) eng.line([[-ext, yv, z], [ext, yv, z]], { color: '#e2e8f0', width: 1.5, depthOverride: 900 });
+}
+function wallTint(s) {
+  if (s.kind === 'cell') return 'rgba(37,99,235,0.16)';
+  if (s.kind === 'res') return s.label === 'R₂' ? 'rgba(147,51,234,0.15)' : 'rgba(22,163,74,0.15)';
+  if (s.kind === 'switch') return 'rgba(8,145,178,0.18)';
+  return 'rgba(100,116,139,0.13)';
+}
+function drawWalls(runs) {
+  eng.poly([[-W, Y0, zF], [-W, Y0, zB], [W, Y0, zB], [W, Y0, zF]], 'rgba(148,163,184,0.06)', { depthBias: 6 });
+  for (const s of runs) {
+    for (let i = 0; i < s.pts.length - 1; i++) {
+      const a = s.pts[i], b = s.pts[i + 1];
+      if (a[1] < Y0 + 0.02 && b[1] < Y0 + 0.02) continue;
+      const ga = [a[0], SHY, a[2]], gb = [b[0], SHY, b[2]];
+      eng.poly([a, b, gb, ga], wallTint(s), { depthBias: 0.5 });
+    }
+  }
+}
+function drawTrack(runs) {
+  for (const s of runs) {
+    if (s.kind === 'switch') { drawSwitch(s); continue; }
+    const col = s.kind === 'res' ? resColor(s.label) : s.kind === 'cell' ? EMF_C : WIRE;
+    eng.line(subdivPath(s.pts, 6), { color: col, width: 7 });
+    const first = s.pts[0], last = s.pts[s.pts.length - 1];
+    if (s.kind === 'res' && s.label) {
+      const mid = v3.lerp(first, last, 0.5);
+      eng.label(v3.add(mid, [0, 0.78, 0]), s.label + ' = ' + s.R + ' Ω', { color: col, size: 18, weight: 700, dx: 26, lift: 0.5 });
+    } else if (s.kind === 'cell') {
+      const mid = v3.lerp(first, last, 0.5);
+      eng.label(v3.add(mid, [0, 0.5, 0]), '+1 V', { color: col, size: 14, weight: 700, dx: -22, lift: 0.5 });
+    }
+  }
+}
+function drawSwitch(s) {
+  const a = s.pts[0], b = s.pts[1];   // a = resistor side (high when open), b = escalator side (0)
+  eng.line(subdiv(a, b, 3), { color: WIRE, width: 4, dash: s.drop > 0.15 ? [4, 5] : null });
+  eng.sphere(a, 0.11, INK); eng.sphere(b, 0.11, INK);
+  const dir = v3.norm(v3.sub(a, b)), len = v3.len(v3.sub(a, b));
+  const lever = S.switchClosed ? a : v3.add(b, v3.add(v3.mul(dir, len * 0.55), [0, len * 0.6 + 0.5, 0]));
+  eng.line([b, lever], { color: S.switchClosed ? SWITCH_C : POS, width: 7 });
+  eng.label(v3.add(v3.lerp(a, b, 0.5), [0, s.drop > 0.15 ? s.drop * H_PER_V * 0.5 + 0.6 : 0.6, 0]),
+    S.switchClosed ? 'switch (closed)' : 'switch (OPEN)', { color: S.switchClosed ? SWITCH_C : POS, size: 15, weight: 700 });
+}
+function drawForce(runs) {
+  for (const s of runs) {
+    if (s.kind !== 'cell') continue;
+    const dir = v3.norm(v3.sub(s.pts[1], s.pts[0])), base = v3.add(v3.lerp(s.pts[0], s.pts[1], 0.5), [0, 0.28, 0]);
+    eng.arrow(base, v3.add(base, v3.mul(dir, 0.9)), { color: FORCE, width: 7, label: 'F' });
+  }
+}
+function drawCurrent(runs) {
+  for (const s of runs) {
+    if (!s.rail) continue;                       // conventional current I runs OPPOSITE to the electrons
+    const a = s.pts[0], b = s.pts[1], mid = v3.lerp(a, b, 0.5), dir = v3.norm(v3.sub(a, b));
+    const off = [0, 0.4, 0];
+    eng.arrow(v3.add(v3.add(mid, v3.mul(dir, -0.7)), off), v3.add(v3.add(mid, v3.mul(dir, 0.7)), off), { color: CUR, width: 8, label: 'I' });
+  }
+}
+function heightArrow(p0, y0, y1, label, sub, dyBase, col) {
+  col = col || INK; dyBase = dyBase || 0;
+  const bottom = [p0[0], y0, p0[2]], top = [p0[0], y1, p0[2]], mid = [p0[0], (y0 + y1) / 2, p0[2]];
+  eng.arrow(mid, top, { color: col, width: 3 }); eng.arrow(mid, bottom, { color: col, width: 3 });
+  eng.line([[p0[0] - 0.25, y0, p0[2]], [p0[0] + 0.25, y0, p0[2]]], { color: col, width: 3 });
+  eng.line([[p0[0] - 0.25, y1, p0[2]], [p0[0] + 0.25, y1, p0[2]]], { color: col, width: 3 });
+  const dx = p0[0] < 0 ? -26 : 26;
+  const us = label.indexOf('_');                 // "X_subscript" → true subscript, composed from two labels
+  if (us >= 0) {
+    eng.label(mid, label.slice(0, us), { color: col, size: 20, weight: 700, dx: dx - 6, dy: dyBase });
+    eng.label(mid, label.slice(us + 1), { color: col, size: 12, weight: 700, dx: dx + 22, dy: dyBase + 8 });
+  } else {
+    eng.label(mid, label, { color: col, size: 20, weight: 700, dx, dy: dyBase });
+  }
+  if (sub) eng.label(mid, sub, { color: '#64748b', size: 14, dx, dy: dyBase + 20 });
+}
+function drawHeights(C) {
+  const g = C;
+  heightArrow([-W - 1.5, 0, zB], Y0, yOf(g.Vbat), 'V_battery', g.Vbat.toFixed(0) + ' V', 0, EMF_C);
+  let i = 0;
+  for (const s of g.runs) {
+    if (s.kind !== 'res') continue;
+    const first = s.pts[0], last = s.pts[s.pts.length - 1];
+    const y0 = Math.min(first[1], last[1]), y1 = Math.max(first[1], last[1]);
+    if (y1 - y0 < 0.06) { i++; continue; }
+    const x = Math.max(first[0], last[0]) + 1.7, z = midZ(first, last);
+    heightArrow([x, 0, z], y0, y1, s.label + 'I', ((y1 - y0) / H_PER_V).toFixed(1) + ' V', (i % 2) ? 20 : -30, resColor(s.label));
+    i++;
+  }
+  const sw = g.runs.find(r => r.kind === 'switch');
+  if (sw && sw.drop > 0.15) {
+    const y1 = yOf(sw.drop);
+    heightArrow([-0.6, 0, zF - 1.3], Y0, y1, 'switch', sw.drop.toFixed(1) + ' V', 0, POS);
+  }
+}
+
+/* ---------- flat "shadow" circuit ---------- */
+function componentFlat(a, b, kind, meta) {
+  if (kind === 'cell') {
+    const dir = v3.norm(v3.sub(b, a)), perp = v3.norm(v3.cross(dir, [0, 1, 0])), c = v3.lerp(a, b, 0.5);
+    eng.line([a, b], { color: SHADOW, width: 4 });          // continuous wire through the cell — no gap
+    const pM = v3.add(c, v3.mul(dir, -0.1)), pP = v3.add(c, v3.mul(dir, 0.1));
+    eng.line([v3.add(pM, v3.mul(perp, -0.28)), v3.add(pM, v3.mul(perp, 0.28))], { color: INK, width: 9 });   // − short plate
+    eng.line([v3.add(pP, v3.mul(perp, -0.5)), v3.add(pP, v3.mul(perp, 0.5))], { color: EMF_C, width: 4 });    // + long plate
+  } else if (kind === 'res') {
+    const rc = resColor(meta.label);
+    if (S.oldResistor) { eng.line(zigzag(a, b, 6, 0.26), { color: rc, width: 3 }); return; }
+    const dir = v3.norm(v3.sub(b, a)), perp = v3.norm(v3.cross(dir, [0, 1, 0])), L = v3.len(v3.sub(b, a));
+    const ls = v3.add(a, v3.mul(dir, L * RES_LEAD)), le = v3.add(a, v3.mul(dir, L * (1 - RES_LEAD))), amp = 0.28;
+    eng.line([a, ls], { color: rc, width: 3 }); eng.line([le, b], { color: rc, width: 3 });
+    eng.poly([v3.add(ls, v3.mul(perp, amp)), v3.add(ls, v3.mul(perp, -amp)), v3.add(le, v3.mul(perp, -amp)), v3.add(le, v3.mul(perp, amp))],
+      '#f8fafc', { stroke: rc, strokeWidth: 2.5, depthBias: -0.3 });
+  } else if (kind === 'switch') {
+    eng.sphere(a, 0.09, INK); eng.sphere(b, 0.09, INK);
+    const lever = S.switchClosed ? a : v3.add(b, v3.add(v3.mul(v3.norm(v3.sub(a, b)), 0.4), [0, 0.5, 0]));
+    eng.line([b, lever], { color: S.switchClosed ? SWITCH_C : POS, width: 5 });
+  } else eng.line([a, b], { color: SHADOW, width: 4 });
+}
+function drawFlatCircuit(runs, droplines) {
+  for (const s of runs) {
+    const first = s.pts[0], last = s.pts[s.pts.length - 1];
+    const a = [first[0], SHY, first[2]], b = [last[0], SHY, last[2]];
+    componentFlat(a, b, s.kind, s);
+  }
+  if (droplines) for (const p of [[-W, zF], [-W, zB], [W, zB], [W, zF]])
+    eng.line([[p[0], Y0, p[1]], [p[0], SHY, p[1]]], { color: '#cbd5e1', width: 1.5, dash: [3, 4] });
+}
+
+/* ---------- main loop ---------- */
+let lastT = 0, Idisp = null;
+function frame(tms) {
+  const t = tms / 1000, dt = Math.max(0, Math.min(t - lastT, 0.05)); lastT = t;
+
+  const Vbat = S.cells;
+  let Rtot; if (S.rmode === 'one') Rtot = S.R1; else if (S.rmode === 'parallel') Rtot = 1 / (1 / S.R1 + 1 / S.R2); else Rtot = S.R1 + S.R2;
+  const Itarget = S.switchClosed ? Vbat / Rtot : 0;
+  if (Idisp === null) Idisp = Itarget;                    // start settled — animate only on later changes
+  Idisp += (Itarget - Idisp) * (1 - Math.exp(-dt * 6));   // ease the current → heights animate
+  if (Math.abs(Idisp - Itarget) < 1e-4) Idisp = Itarget;
+
+  const C = buildCircuit(Idisp);
+  const flatRuns = C.runs.map(r => ({ ...r, pts: r.pts.map(p => [p[0], SHY, p[2]]) }));
+  const active = S.view === 'flat' ? flatRuns : C.runs;
+
+  const sig = S.cells + '|' + S.rmode;
+  const { edges, outFrom } = buildFlowGraph(active);
+  if (sig !== flowSig) { initParticles(edges); flowSig = sig; }
+  if (S.charges) stepParticles(edges, outFrom, dt);
+
+  ctx.clearRect(0, 0, CW(), CH());
+  eng.begin(CW(), CH());
+  if (S.grid) drawGrid();
+  if (S.view === 'flat') {
+    drawFlatCircuit(flatRuns, false);
+    if (S.charges) drawCharges(edges);
+    drawCurrent(flatRuns);
+  } else {
+    if (S.shadow) drawFlatCircuit(flatRuns, true);
+    if (S.walls) drawWalls(C.runs);
+    drawTrack(C.runs);
+    if (S.charges) drawCharges(edges);
+    if (S.force) drawForce(C.runs);
+    drawCurrent(C.runs);
+    if (S.heights) drawHeights(C);
+  }
+  eng.flush(ctx);
+
+  roVbat.set(Vbat.toFixed(0) + ' V');
+  roI.set(Idisp.toFixed(2) + ' A');
+  roR.set((Math.round(Rtot * 100) / 100) + ' Ω');
+  const modeTxt = S.rmode === 'parallel' ? 'R_1 \\parallel R_2' : S.rmode === 'one' ? 'R_1' : 'R_1 + R_2';
+  foot.set('Height $=$ electric potential. $V_\\text{battery} = ' + S.cells + '\\times 1\\,\\text{V} = ' + Vbat + '$ V — each cell lifts a charge by $1$ V; the resistors drop it by $IR$. ' +
+    (S.switchClosed
+      ? 'Round the loop the rise equals the drop: $V_\\text{battery} = I(' + modeTxt + ')$.'
+      : '<b>Switch open:</b> no current, so the resistors drop nothing and the full $V_\\text{battery}$ appears across the switch.') +
+    '<div class="small">Electrons drift one way; conventional current $I$ is drawn the opposite way. The flat circuit below is the same loop drawn the usual way.</div>');
+
+  const sb = swBtns.querySelector('button');
+  if (sb) sb.textContent = S.switchClosed ? '⏻ Open switch' : '⏻ Close switch';
+
+  requestAnimationFrame(frame);
+}
+window.BOOT_DONE = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
