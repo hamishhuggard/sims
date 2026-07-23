@@ -47,8 +47,24 @@ function classify(ph) {
   return 'strong alkali';
 }
 
+/* Titration model: each substance's pH implies a net "acidity" concentration
+   (equivalent [H+] - [OH-]); mixing two volumes mixes those concentrations,
+   same approach as neutralisation.html's fixed-HCl/NaOH formula, generalised
+   to any two pH values so any substance pair can be dripped together. */
+function acidity(ph) { return Math.pow(10, -ph) - Math.pow(10, ph - 14); }
+function titrationPH(ph0, phT, V0, Vt) {
+  const c = (V0 * acidity(ph0) + Vt * acidity(phT)) / (V0 + Vt);
+  let ph;
+  if (c > 1e-7) ph = -Math.log10(c);
+  else if (c < -1e-7) ph = 14 + Math.log10(-c);
+  else ph = 7;
+  return Math.max(0.2, Math.min(13.8, ph));
+}
+const V0_CONST = 25, VT_MAX = 40;
+
 const S = {
-  ph: 7,
+  ph0: 7,
+  dripMode: false, tPh: 1, Vt: 0, dripRate: 1.5, dripping: false, showTitrationGraph: true,
   indicator: 'none', // none | universal | litmus | phenolphthalein
   showH: true, showOH: true, showWater: true, showBar: true, labels: true,
   labelledIons: false, // false = accurate molecule models (bare H+, bonded O-H for OH-); true = simple labelled spheres
@@ -61,16 +77,64 @@ const gs = ui.group('Substance');
 const CUSTOM_PH = '__custom__';
 let syncingPH = false;
 const substanceOptions = [{ value: CUSTOM_PH, label: 'Custom pH' }]
-  .concat(SUBSTANCES.map(s => ({ value: s.label, label: s.label + ' (pH ' + s.ph + ')' })));
+  .concat(SUBSTANCES.map(s => ({ value: s.label, label: s.label })));
 const substanceSelect = ui.select(gs, 'Pick a substance', substanceOptions, 'Pure water', v => {
   if (syncingPH) return;
   const sub = SUBSTANCES.find(s => s.label === v);
   if (sub) { syncingPH = true; phSlider.set(sub.ph); syncingPH = false; }
 });
 const phSlider = ui.slider(gs, 'pH', { min: 0, max: 14, step: 0.5, value: 7, fmt: v => v.toFixed(1) }, v => {
-  S.ph = v;
+  S.ph0 = v;
   if (!syncingPH) { syncingPH = true; substanceSelect.set(CUSTOM_PH); syncingPH = false; }
 });
+
+const gt = ui.group('Titration (drip in)');
+let dripStartBtn;
+ui.toggle(gt, 'Enable dripping', false, v => {
+  S.dripMode = v;
+  dripSub.style.display = v ? '' : 'none';
+  if (!v) { S.Vt = 0; S.dripping = false; drops.length = 0; dripStartBtn.textContent = '▶ Start drip'; }
+});
+const dripSub = document.createElement('div');
+dripSub.style.display = 'none';
+gt.appendChild(dripSub);
+
+let syncingTPH = false;
+const CUSTOM_PH_T = '__customT__';
+const titrantOptions = [{ value: CUSTOM_PH_T, label: 'Custom pH' }]
+  .concat(SUBSTANCES.map(s => ({ value: s.label, label: s.label })));
+const titrantSelect = ui.select(dripSub, 'Titrant (in the burette)', titrantOptions, 'Hydrochloric acid', v => {
+  if (syncingTPH) return;
+  const sub = SUBSTANCES.find(s => s.label === v);
+  if (sub) { syncingTPH = true; titrantPhSlider.set(sub.ph); syncingTPH = false; }
+});
+const titrantPhSlider = ui.slider(dripSub, 'Titrant pH', { min: 0, max: 14, step: 0.5, value: 1, fmt: v => v.toFixed(1) }, v => {
+  S.tPh = v;
+  if (!syncingTPH) { syncingTPH = true; titrantSelect.set(CUSTOM_PH_T); syncingTPH = false; }
+});
+const dripBtnRow = ui.buttons(dripSub, [
+  { label: '▶ Start drip', primary: true, onClick: () => {
+      S.dripping = !S.dripping;
+      dripStartBtn.textContent = S.dripping ? '⏸ Pause drip' : '▶ Start drip';
+    } },
+  { label: '+1 mL', onClick: () => { S.Vt = Math.min(VT_MAX, S.Vt + 1); } },
+  { label: '⟲ Reset', onClick: () => {
+      S.Vt = 0; S.dripping = false; drops.length = 0;
+      dripStartBtn.textContent = '▶ Start drip';
+    } }
+]);
+dripStartBtn = dripBtnRow.querySelectorAll('button')[0];
+ui.slider(dripSub, 'Drip rate', { min: 0.5, max: 5, step: 0.5, value: 1.5, fmt: v => v.toFixed(1) + ' mL/s' }, v => S.dripRate = v);
+ui.buttons(dripSub, [
+  { label: '⇄ Swap tube / titrant', onClick: () => {
+      const a = phSlider.get(), b = titrantPhSlider.get();
+      phSlider.set(b);
+      titrantPhSlider.set(a);
+      S.Vt = 0; S.dripping = false; drops.length = 0;
+      dripStartBtn.textContent = '▶ Start drip';
+    } }
+]);
+ui.toggle(dripSub, 'pH vs volume graph', true, v => S.showTitrationGraph = v);
 
 const gi = ui.group('Indicator');
 ui.segment(gi, null, [
@@ -114,6 +178,15 @@ const swarm = ParticleSwarm({
   bowl: { yc: VESSEL.y0 + VESSEL.r, r: VESSEL.r * 0.88 }
 });
 
+/* burette, shown above the tube only while dripping is enabled */
+const BUR = { r: 0.22, y0: 3.15, y1: 5.3 };
+const TIP_Y = BUR.y0 - 0.15;
+const drops = []; // { y }
+let dropTimer = 0;
+function buretteLevel() {
+  return BUR.y0 + ((BUR.y1 - BUR.y0) / 50) * (50 - S.Vt);
+}
+
 /* ball-and-stick specs for "molecule models" mode (local +x = heading) */
 const MOL_OH = {
   atoms: [
@@ -131,12 +204,12 @@ const MOL_H2O = {
   bonds: [[0, 1], [0, 2]], bondColor: '#94a3b8', bondW: 1.8
 };
 
-function liquidColour() {
+function liquidColour(ph) {
   if (S.indicator === 'universal') {
-    return hexToRgba(UNIVERSAL[Math.round(S.ph)], 0.55);
+    return hexToRgba(UNIVERSAL[Math.round(ph)], 0.55);
   }
   if (S.indicator === 'phenolphthalein') {
-    return S.ph > 8.3 ? 'rgba(236,72,153,0.5)' : 'rgba(210,225,235,0.35)';
+    return ph > 8.3 ? 'rgba(236,72,153,0.5)' : 'rgba(210,225,235,0.35)';
   }
   return 'rgba(180,205,225,0.4)'; // pale blue-grey default (also litmus: don't tint)
 }
@@ -174,53 +247,55 @@ function colourAtPH(ph, stops) {
   return stops[stops.length - 1][1];
 }
 
-/* pH spectrum strip, sitting on the bench in front of the test tube, parallel
-   to the clamp stand's base (both run along x) — on the near (+z) side, i.e.
-   the side closest to the camera in the sim's starting orientation. */
-const PHBAR = { x0: -2.75, x1: 0.75, z: 1.9, zHalf: 0.32, y: BENCH + 0.025 };
-function drawPHBarScene() {
+/* pH spectrum strip, standing upright beside the test tube — in the same
+   z=0 plane as the clamp stand's rod and the tube itself (the "stand-tube
+   plane"), facing the default camera position (yaw 0.5, pitch 0.28) the
+   way a sign propped up next to the tube would. Placed on the tube's far
+   side from the stand (+x) so it doesn't collide with the arm/ring. */
+const PHBAR = { x: 1.55, xHalf: 0.32, y0: -1.65, y1: 1.85, z: 0 };
+function drawPHBarScene(ph) {
   const stops = phBarStops();
-  const { x0, x1, z, zHalf, y } = PHBAR;
-  const len = x1 - x0;
+  const { x, xHalf, y0, y1, z } = PHBAR;
+  const len = y1 - y0;
   const n = stops ? 30 : 15;
   for (let i = 0; i < n; i++) {
     const t0 = i / n, t1 = (i + 1) / n;
-    const xa = x0 + t0 * len, xb = x0 + t1 * len;
+    const ya = y0 + t0 * len, yb = y0 + t1 * len;
     const col = stops ? colourAtPH(((t0 + t1) / 2) * 14, stops) : UNIVERSAL[i];
     eng.poly([
-      [xa, y, z - zHalf], [xb, y, z - zHalf],
-      [xb, y, z + zHalf], [xa, y, z + zHalf]
+      [x - xHalf, ya, z], [x + xHalf, ya, z],
+      [x + xHalf, yb, z], [x - xHalf, yb, z]
     ], col, { depthBias: -0.02 });
   }
-  eng.line([[x0, y, z - zHalf], [x1, y, z - zHalf], [x1, y, z + zHalf], [x0, y, z + zHalf], [x0, y, z - zHalf]],
+  eng.line([[x - xHalf, y0, z], [x + xHalf, y0, z], [x + xHalf, y1, z], [x - xHalf, y1, z], [x - xHalf, y0, z]],
     { color: INK, width: 3 });
 
-  /* numbers sit under the spectrum (near-camera side, same paper plane —
-     printed below the colour strip, not floating above it), painted flat
-     into the plane (not billboard sprites) so they skew in perspective
-     like real ink on the strip as the camera orbits */
-  const flatOpts = { right: [1, 0, 0], up: [0, 0, 1] };
-  const numZ = z + zHalf + 0.3;
+  /* numbers sit to the right of the strip, painted flat into the strip's
+     own plane (not billboard sprites) so they read like ink printed on a
+     sign, not a sprite floating in front of it */
+  const flatOpts = { right: [1, 0, 0], up: [0, -1, 0], align: 'left' };
+  const numX = x + xHalf + 0.18;
   for (let i = 0; i <= 14; i += 2) {
-    const x = x0 + (i / 14) * len;
-    eng.line([[x, y, z + zHalf], [x, y, z + zHalf + 0.12]], { color: INK, width: 2 });
-    eng.flatLabel([x, y, numZ], String(i), Object.assign({ color: INK, size: 0.22, weight: 700 }, flatOpts));
+    const yy = y0 + (i / 14) * len;
+    eng.line([[x + xHalf, yy, z], [x + xHalf + 0.12, yy, z]], { color: INK, width: 2 });
+    eng.flatLabel([numX, yy, z], String(i), Object.assign({ color: INK, size: 0.22, weight: 700 }, flatOpts));
   }
 
-  /* acid/neutral/alkali labels sit under the numbers, same paper plane */
-  const labZ = numZ + 0.32;
-  eng.flatLabel([x0 + (2 / 14) * len, y, labZ], 'ACID', Object.assign({ color: '#c81d25', size: 0.2, weight: 800 }, flatOpts));
-  eng.flatLabel([x0 + (7 / 14) * len, y, labZ], 'NEUTRAL', Object.assign({ color: '#3aa17e', size: 0.2, weight: 800 }, flatOpts));
-  eng.flatLabel([x0 + (12 / 14) * len, y, labZ], 'ALKALI', Object.assign({ color: '#31408f', size: 0.2, weight: 800 }, flatOpts));
+  /* acid/neutral/alkali labels sit further right, same plane, level with
+     the middle of their respective zone on the strip */
+  const labX = numX + 0.42;
+  eng.flatLabel([labX, y0 + (2 / 14) * len, z], 'ACID', Object.assign({ color: '#c81d25', size: 0.2, weight: 800 }, flatOpts));
+  eng.flatLabel([labX, y0 + (7 / 14) * len, z], 'NEUTRAL', Object.assign({ color: '#3aa17e', size: 0.2, weight: 800 }, flatOpts));
+  eng.flatLabel([labX, y0 + (12 / 14) * len, z], 'ALKALI', Object.assign({ color: '#31408f', size: 0.2, weight: 800 }, flatOpts));
 
-  /* a flat red triangle above the spectrum (far side, same paper plane),
-     pointing down at the current pH's position on the strip */
-  const px = x0 + (S.ph / 14) * len;
-  const triTipZ = z - zHalf - 0.03, triW = 0.16, triH = 0.26;
+  /* a flat red triangle to the left of the strip, same plane, pointing
+     right at the current pH's height */
+  const py = y0 + (ph / 14) * len;
+  const triTipX = x - xHalf - 0.03, triW = 0.16, triH = 0.26;
   eng.poly([
-    [px, y, triTipZ],
-    [px - triW, y, triTipZ - triH],
-    [px + triW, y, triTipZ - triH]
+    [triTipX, py, z],
+    [triTipX - triH, py - triW, z],
+    [triTipX - triH, py + triW, z]
   ], '#e63946', { depthBias: -0.03 });
 }
 
@@ -228,7 +303,23 @@ let lastT = 0;
 function frame(tms) {
   const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
 
-  const ph = S.ph;
+  if (S.dripMode) {
+    if (S.dripping && S.Vt < VT_MAX) {
+      S.Vt = Math.min(VT_MAX, S.Vt + S.dripRate * dt);
+      dropTimer -= dt;
+      if (dropTimer <= 0) { drops.push({ y: TIP_Y }); dropTimer = Math.max(0.08, 0.5 / S.dripRate); }
+    }
+    if (S.Vt >= VT_MAX && S.dripping) { S.dripping = false; dripStartBtn.textContent = '▶ Start drip'; }
+  }
+  const ph = S.dripMode ? titrationPH(S.ph0, S.tPh, V0_CONST, S.Vt) : S.ph0;
+  const level = S.dripMode ? Math.min(VESSEL.y1 - 0.35, VESSEL.level + 0.018 * S.Vt) : VESSEL.level;
+
+  /* advance falling drops, remove on landing */
+  for (let i = drops.length - 1; i >= 0; i--) {
+    drops[i].y -= 3.2 * dt;
+    if (drops[i].y <= level) drops.splice(i, 1);
+  }
+
   const nH = Math.max(0, Math.min(50, Math.round(6 * S.countMul * Math.pow(10, (7 - ph) / 2.6))));
   const nOH = Math.max(0, Math.min(50, Math.round(6 * S.countMul * Math.pow(10, (ph - 7) / 2.6))));
 
@@ -242,6 +333,7 @@ function frame(tms) {
   swarm.want('H+', { n: S.showH ? nH : 0, radius: hR, speed: 0.8 });
   swarm.want('OH-', { n: S.showOH ? nOH : 0, radius: oR, speed: 0.7 });
   swarm.want('H2O', { n: S.showWater ? Math.round(30 * S.countMul) : 0, radius: wR, speed: 0.5 });
+  swarm.setRegion({ y1: level - 0.1 });
   swarm.step(dt * S.speed);
 
   ctx.clearRect(0, 0, W(), H());
@@ -258,7 +350,8 @@ function frame(tms) {
      assembly reads as stable rather than top-heavy: rod stays at x=-2.2, base runs from
      x=-2.75 (behind the rod) to x=-0.4 (nearly under the clamped tube). */
   const clampY = VESSEL.y1 - 0.7;
-  const rodBottom = -2.45, rodTop = clampY + 0.4;
+  const clampY2 = BUR.y0 + 0.15; // second ring, holding the burette, only used in drip mode
+  const rodBottom = -2.45, rodTop = (S.dripMode ? clampY2 : clampY) + 0.4;
   const baseX0 = -2.75, baseX1 = -0.4;
   const baseHalfX = (baseX1 - baseX0) / 2, baseCx = (baseX0 + baseX1) / 2;
   eng.box([baseCx, BENCH + 0.06, 0], baseHalfX, 0.06, 0.55, STAND_DARK, { stroke: INK, strokeWidth: 1 });
@@ -267,7 +360,19 @@ function frame(tms) {
   eng.box([(-2.2 - ringR) / 2, clampY, 0], (2.2 - ringR) / 2, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1 });
   eng.line(circle3(clampY, VESSEL.r + 0.07), { color: STAND_DARK, width: 6 });
 
-  drawTestTube(eng, Object.assign({}, VESSEL, { liquid: liquidColour() }));
+  if (S.dripMode) {
+    /* second arm + ring, holding the burette above the tube */
+    const ringR2 = BUR.r + 0.06;
+    eng.box([(-2.2 - ringR2) / 2, clampY2, 0], (2.2 - ringR2) / 2, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1 });
+    eng.line(circle3(clampY2, ringR2), { color: STAND_DARK, width: 5 });
+
+    drawBeaker(eng, { r: BUR.r, y0: BUR.y0, y1: BUR.y1, level: buretteLevel(), liquid: 'rgba(160,190,225,0.45)' });
+    eng.box([0, BUR.y0 - 0.15, 0], 0.11, 0.15, 0.11, '#334155', { stroke: INK, strokeWidth: 1.5 });
+    if (S.labels) eng.label([0, BUR.y1 + 0.35, 0], 'titrant, pH ' + S.tPh.toFixed(1), { color: '#475569', size: 15, lift: 3 });
+    for (const d of drops) eng.sphere([0, d.y, 0], 0.06, '#60a5fa');
+  }
+
+  drawTestTube(eng, Object.assign({}, VESSEL, { level, liquid: liquidColour(ph) }));
 
   /* H2O : small background molecules (bent ball-and-stick in molecule mode) */
   for (const pt of swarm.list('H2O')) {
@@ -307,7 +412,7 @@ function frame(tms) {
     const sx = sv[0] * 0.55, sz = sv[2] * 0.55;
     const halfW = 0.14;
     const stripTop = VESSEL.y1 + 0.6, stripBottom = VESSEL.y0 + 0.75;
-    const submergedY = VESSEL.level - 0.05;
+    const submergedY = level - 0.05;
     const corner = (y, sign) => [sx + sv[0] * halfW * sign, y, sz + sv[2] * halfW * sign];
     // dry (upper) half — always the original colour
     eng.poly([corner(stripTop, -1), corner(stripTop, 1), corner(submergedY, 1), corner(submergedY, -1)],
@@ -318,9 +423,11 @@ function frame(tms) {
     if (S.labels) eng.label([sx, stripTop + 0.3, sz], 'litmus paper', { color: '#475569', size: 15, lift: 2 });
   }
 
-  if (S.showBar) drawPHBarScene();
+  if (S.showBar) drawPHBarScene(ph);
 
   eng.flush(ctx);
+
+  if (S.dripMode && S.showTitrationGraph) drawTitrationGraph(ph);
 
   roPH.set(ph.toFixed(1));
   const cls = classify(ph);
@@ -328,9 +435,52 @@ function frame(tms) {
 
   const dominant = ph < 7 ? 'more H⁺ than OH⁻' : (ph > 7 ? 'more OH⁻ than H⁺' : 'equal H⁺ and OH⁻');
   const kind = ph < 7 ? 'Acids release hydrogen ions (H⁺) in water.' : (ph > 7 ? 'Bases release hydroxide ions (OH⁻) in water.' : 'Pure water is neutral.');
-  foot.set('pH ' + ph.toFixed(1) + ' — <b>' + cls + '</b>: ' + dominant + '. ' + kind);
+  if (S.dripMode) {
+    const region = Math.abs(ph - 7) < 0.4 ? 'near neutral — H⁺ and OH⁻ combining into water' : (ph < 7 ? 'still net acidic' : 'still net basic');
+    foot.set(S.Vt.toFixed(1) + ' mL of titrant added, pH ' + ph.toFixed(1) + ' — <b>' + cls + '</b>: ' + region + '.');
+  } else {
+    foot.set('pH ' + ph.toFixed(1) + ' — <b>' + cls + '</b>: ' + dominant + '. ' + kind);
+  }
 
   requestAnimationFrame(frame);
+}
+
+/* pH vs volume titration curve, bottom-left 2D overlay (drip mode only) */
+function drawTitrationGraph(ph) {
+  const gw = Math.min(430, W() * 0.42), gh = 200;
+  const gx = 20, gy = H() - gh - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  const mx = gx + 40, mw = gw - 54, my = gy + 14, mh = gh - 44;
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx, my + mh); ctx.lineTo(mx + mw, my + mh); ctx.stroke();
+  Draw.label(ctx, 'pH', gx + 16, my + 6, { size: 13, color: '#475569' });
+  Draw.label(ctx, '14', mx - 10, my, { size: 12, color: '#475569', align: 'right' });
+  Draw.label(ctx, '0', mx - 10, my + mh, { size: 12, color: '#475569', align: 'right' });
+  Draw.label(ctx, 'Titrant added (mL) →', mx + mw / 2, gy + gh - 12, { size: 12, color: '#475569' });
+  Draw.label(ctx, String(VT_MAX), mx + mw, my + mh + 14, { size: 11, color: '#475569' });
+  Draw.label(ctx, '0', mx, my + mh + 14, { size: 11, color: '#475569' });
+
+  // the S-curve for the current tube/titrant pH pair
+  ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 3.5; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (let i = 0; i <= 100; i++) {
+    const v = (i / 100) * VT_MAX;
+    const y = my + mh - (titrationPH(S.ph0, S.tPh, V0_CONST, v) / 14) * mh;
+    const x = mx + (v / VT_MAX) * mw;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // current point
+  const cx = mx + (S.Vt / VT_MAX) * mw, cy = my + mh - (ph / 14) * mh;
+  ctx.fillStyle = INK;
+  ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill();
 }
 
 window.BOOT_DONE = true;
