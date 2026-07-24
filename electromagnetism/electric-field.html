@@ -128,7 +128,6 @@ function inlineSeg(parent, label, options, value, onChange) {
   parent.lastElementChild.classList.add('inline');
   return h;
 }
-function groupTitle(g) { return g.querySelector('.group-title'); }
 
 const gf = ui.group(null);
 wideSeg(gf, [
@@ -153,20 +152,30 @@ const signOpts = [
   { value: '-1', label: '−' },
   { value: '0', label: 'off' }
 ];
-const gc = ui.group('Charges');
-inlineSeg(gc, 'Charge 1', signOpts, '1', v => { S.charge1 = parseInt(v); sync(); });
-inlineSeg(gc, 'Charge 2', signOpts, '0', v => { S.charge2 = parseInt(v); sync(); });
-
-const gt = ui.group('Test charge');
+/* No group headings here: every row already names itself ('Charge 1', 'Test
+   charge', …), so a 'CHARGES' / 'TEST CHARGE' caption above them was just
+   repeating the row underneath it. They also all live in ONE ctl-group — split
+   across two, the group's own margin made the Charge-2-to-test-charge gap
+   visibly wider than the Charge-1-to-Charge-2 one; in a single group every row
+   is spaced by the same .ctl-seg padding. */
+const gt = ui.group(null);
 // gravity has no negative mass, so that column of the grid gets a plain
-// show/hide in place of the +/−/off sign picker
-const signSeg = inlineSeg(gt, 'Sign', signOpts, '1', v => { S.testCharge = parseInt(v); });
+// show/hide in place of the +/−/off sign picker. Only one of the two rows is
+// ever visible, so each carries the name the vanished heading used to.
+const signSeg = inlineSeg(gt, 'Test charge', signOpts, '1', v => { S.testCharge = parseInt(v); });
 const signRow = gt.lastElementChild;
-const massSeg = wideSeg(gt, [
+const massSeg = inlineSeg(gt, 'Test mass', [
   { value: '1', label: 'show' },
   { value: '0', label: 'hide' }
 ], '1', v => { S.testCharge = parseInt(v); });
 const massRow = gt.lastElementChild;
+
+// the two source-charge slots, shown/hidden as a unit (only the point-charge
+// cells have them) without disturbing the shared row spacing
+const gc = document.createElement('div');
+gt.appendChild(gc);
+inlineSeg(gc, 'Charge 1', signOpts, '1', v => { S.charge1 = parseInt(v); sync(); });
+inlineSeg(gc, 'Charge 2', signOpts, '0', v => { S.charge2 = parseInt(v); sync(); });
 
 const cartWrap = document.createElement('div');
 gt.appendChild(cartWrap);
@@ -209,7 +218,6 @@ function sync() {
   srcSlider.set(srcSlider.get()); // repaint the value with the new unit
 
   gc.style.display = S.preset === 'point' ? '' : 'none';
-  groupTitle(gt).textContent = isG ? 'Test mass' : 'Test charge';
   signRow.style.display = isG ? 'none' : '';
   massRow.style.display = isG ? '' : 'none';
   S.testCharge = parseInt((isG ? massSeg : signSeg).get());
@@ -398,18 +406,26 @@ function headOn(pts, frac, fwd, col) {
    uniform straight-down line the interior gets — the real (non-ideal-infinite-
    plate) field bulges outward past the edge and curves back to the other
    plate. Modelled as a cosmetic bow (not solved from fieldAt's hard-cutoff
-   box), seeded just inboard of the physical edge so it visibly departs
-   from the plate. */
-function edgePlateBow(x0, z) {
+   box) running plate-to-plate at x0 and bulging `bulge` past it. */
+function edgePlateBow(x0, z, bulge) {
   const pts = [];
-  const N = 24;
+  const N = 26;
   const y0 = U.gap - 0.06;
   for (let i = 0; i <= N; i++) {
     const t = i / N;
-    pts.push([x0 + Math.sign(x0) * 0.7 * Math.sin(Math.PI * t), y0 - 2 * y0 * t, z]);
+    pts.push([x0 + Math.sign(x0) * bulge * Math.sin(Math.PI * t), y0 - 2 * y0 * t, z]);
   }
   return pts;
 }
+/* the fan of them: the nearer a line starts to the edge, the further out it
+   swings — three per side per depth row, thinning outwards because the field
+   really is weaker out there. One lone bow read as a stray line; a graded fan
+   reads as the field spilling round the edge, which is what it does. */
+const FRINGE = [
+  { inset: 0.55, bulge: 0.42, width: 3.2 },
+  { inset: 0.22, bulge: 0.80, width: 2.8 },
+  { inset: -0.02, bulge: 1.15, width: 2.4 }
+];
 
 /* surface charge on a plate face, drawn as two chunky strokes in a
    camera-facing plane rather than as a text glyph: at 26px a '−' is a hairline
@@ -423,8 +439,15 @@ function chargeGlyph(p, sign, col) {
   const cp = Math.cos(eng.cam.pitch), sp = Math.sin(eng.cam.pitch);
   const right = [cy, 0, -sy], up = [-sp * sy, cp, -sp * cy];
   const h = 0.17, dep = eng.project(p).depth - 4;
-  eng.line([v3.sub(p, v3.mul(right, h)), v3.add(p, v3.mul(right, h))], { color: col, width: 5, depthOverride: dep });
-  if (sign > 0) eng.line([v3.sub(p, v3.mul(up, h)), v3.add(p, v3.mul(up, h))], { color: col, width: 5, depthOverride: dep });
+  const strokes = [[right, h], [up, sign > 0 ? h : 0]];
+  // white understroke first, colour on top: a red '+' on a red plate (or blue
+  // '−' on blue) is nearly invisible without the outline
+  for (const [c, w] of [['#fff', 9], [col, 5]])
+    for (const [dir, len] of strokes) {
+      if (!len) continue;
+      eng.line([v3.sub(p, v3.mul(dir, len)), v3.add(p, v3.mul(dir, len))],
+               { color: c, width: w, depthOverride: dep - (c === '#fff' ? 0 : 0.01) });
+    }
 }
 
 /* one field line of a uniform field: a straight run with a head at the bottom
@@ -442,11 +465,19 @@ function uniformLine(x, z, yTop, yBot, col) {
    equation (E = V/d) but was nowhere in the picture. */
 function dimensionD() {
   const x = -U.hw - 0.45, z = U.hd * 0.75, h = U.gap;
-  for (const s of [1, -1]) {
-    eng.line([[x, 0.22 * s, z], [x, h * s, z]], { color: INK, width: 2.5, arrow: true });
-    eng.line([[x - 0.22, h * s, z], [x + 0.22, h * s, z]], { color: INK, width: 2.5 });
+  // white understroke + a hard depthOverride: it stands in the middle of the
+  // fringing fan, and like any dimension on a drawing it has to read *over*
+  // whatever it crosses rather than getting tangled in it
+  const dep = eng.project([x, 0, z]).depth - 5;
+  for (const [col, extra] of [['#fff', 5], [INK, 0]]) {
+    for (const s of [1, -1]) {
+      eng.line([[x, 0.22 * s, z], [x, h * s, z]],
+               { color: col, width: 2.5 + extra, arrow: col === INK, depthOverride: dep + (extra ? 0.01 : 0) });
+      eng.line([[x - 0.22, h * s, z], [x + 0.22, h * s, z]],
+               { color: col, width: 2.5 + extra, depthOverride: dep + (extra ? 0.01 : 0) });
+    }
   }
-  eng.label([x, 0, z], 'd', { color: INK, size: 22, lift: 0.4 });
+  eng.label([x, 0, z], 'd', { color: INK, size: 22, lift: 5.4 });
 }
 
 function frame() {
@@ -469,20 +500,21 @@ function frame() {
         chargeGlyph([x, U.gap - 0.2, 0], 1, POS);
         chargeGlyph([x, -U.gap + 0.2, 0], -1, NEG);
       }
+      dimensionD(); // an annotation, not a field line — belongs to Labels
     }
     if (S.lines) {
       for (const z of U.colZ) for (const x of U.colX)
         uniformLine(x, z, U.gap - 0.06, -U.gap + 0.06, E_COL);
-      for (const side of [-1, 1]) {
-        const pts = edgePlateBow(side * (U.hw - 0.35), 0);
-        eng.line(pts, { color: E_COL, width: 3 });
+      for (const side of [-1, 1]) for (const z of U.colZ) for (const f of FRINGE) {
+        const pts = edgePlateBow(side * (U.hw - f.inset), z, f.bulge);
+        eng.line(pts, { color: E_COL, width: f.width });
         headOn(pts, 0.5, true, E_COL);
       }
       if (S.labels) {
-        // in the gap between the two right-hand columns — the left of the gap is
-        // where the fringing bow lives
-        eng.label([1.6, 1.35, U.colZ[1]], 'E', { color: E_COL, size: 26, lift: 1.4 });
-        dimensionD();
+        // same spot as the 'g' in the gravity cell — in the window between the
+        // fringing bow and the leftmost column, well clear of the test charge
+        // (whose own F label would otherwise crowd it when the force points up)
+        eng.label([-0.30, 1.35, U.colZ[1]], 'E', { color: E_COL, size: 26, lift: 1.4 });
       }
     }
   } else if (S.preset === 'surfacegravity') {
@@ -502,7 +534,7 @@ function frame() {
       // boundary instead of two, which is exactly the analogy being taught
       for (const z of U.colZ) for (const x of U.colX)
         uniformLine(x, z, 2.35, -U.gap + 0.06, G_COL);
-      if (S.labels) eng.label([U.colX[0] - 0.45, 1.4, U.colZ[1]], 'g', { color: G_COL, size: 26, lift: 1.4 });
+      if (S.labels) eng.label([-0.30, 1.35, U.colZ[1]], 'g', { color: G_COL, size: 26, lift: 1.4 });
     }
   } else if (S.preset === 'earth') {
     eng.sphere([0, 0, 0], 1.3, '#3b82f6', { stroke: '#1e40af', strokeWidth: 2 });
@@ -538,7 +570,9 @@ function frame() {
   if (S.vectors) {
     const pts = [];
     if (S.preset === 'plates' || S.preset === 'surfacegravity') {
-      for (const x of [-3, -1.5, 0, 1.5, 3]) for (const y of [-1.2, 0, 1.2]) pts.push([x, y, 0]);
+      // one z-row, on the same columns as the field lines, so switching between
+      // the two representations doesn't shuffle the geometry around
+      for (const x of U.colX) for (const y of [-1.3, 0, 1.3]) pts.push([x, y, 0]);
     } else {
       for (let x = -4.5; x <= 4.6; x += 1.5) for (let z = -4.5; z <= 4.6; z += 1.5) pts.push([x, 0, z]);
     }
@@ -563,9 +597,9 @@ function frame() {
       // instead of walking the test object out into the zero-field region (and
       // under the control panel). The 0.64 also drops the default 2.6 into the
       // gap between the two right-hand field-line columns.
-      tp[0] = pos.x * 0.64;
+      tp[0] = pos.x * 0.70;
       tp[1] = pos.z * 0.4;
-      tp[2] = U.hd * 0.8; // stand it in front of both field-line rows, so it and
+      tp[2] = U.hd * 0.95; // stand it in front of both field-line rows, so it and
                           // its force arrow never sit on top of a field line
     }
     const E = v3.mul(fieldAt(tp, chs), S.Q);
@@ -578,11 +612,14 @@ function frame() {
       const fhat = v3.norm(isG ? E : F);
       const flen = 0.5 + Math.min(2.2, Fmag * 3);
       const from = v3.add(tp, v3.mul(fhat, 0.34)), to = v3.add(tp, v3.mul(fhat, 0.34 + flen));
-      eng.arrow(from, to, { color: F_COL, width: 5 });
-      // labelled beside the shaft rather than past the head: in the uniform
-      // cells the arrow points straight down, and a label past its head landed
-      // buried in the bottom plate / underground
-      if (S.labels) eng.label(v3.lerp(from, to, 0.5), 'F', { color: F_COL, size: 24, dx: 22, lift: 1.4 });
+      const uniform = S.preset === 'plates' || S.preset === 'surfacegravity';
+      // in the uniform cells the arrow is long enough to punch through the far
+      // plate / bury its head in the grass — stop it at the boundary instead,
+      // and label it beside the shaft, since a label past the head would land
+      // inside the plate / underground too
+      if (uniform) to[1] = Math.max(-U.gap + 0.18, Math.min(U.gap - 0.18, to[1]));
+      eng.arrow(from, to, { color: F_COL, width: 5, label: (S.labels && !uniform) ? 'F' : '' });
+      if (S.labels && uniform) eng.label(v3.lerp(from, to, 0.5), 'F', { color: F_COL, size: 24, dx: 24, lift: 1.4 });
     }
   }
 
