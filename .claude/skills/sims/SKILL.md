@@ -193,9 +193,8 @@ patterns worth copying:
   is one cycle: `N = round(Ltot/ESPC)` electrons at `Ltot/N` spacing wrap
   seamlessly. Runs must be oriented in the carriers' travel direction; point the
   conventional-current `I` arrows the *opposite* way (tag the two rail runs and
-  reverse the arrow). (`circuit-3d.html` still uses the older per-particle
-  `buildFlowGraph`/`pickBranch` walker — fine for a single loop, but the
-  deterministic placer is what gives an even, permanent zipper at a fork.)
+  reverse the arrow). The deterministic placer is what gives an even, permanent
+  zipper at a fork; an older per-particle walker drifts out of alignment there.
 - **Schematic component glyphs that must read as connected**: draw the
   continuous wire `a→b` first, then lay the symbol (battery plates, etc.) on
   top — leads that merely *approach* the symbol leave sub-pixel gaps that read
