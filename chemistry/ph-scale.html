@@ -247,12 +247,13 @@ function colourAtPH(ph, stops) {
   return stops[stops.length - 1][1];
 }
 
-/* pH spectrum strip, standing upright beside the test tube — in the same
-   z=0 plane as the clamp stand's rod and the tube itself (the "stand-tube
-   plane"), facing the default camera position (yaw 0.5, pitch 0.28) the
-   way a sign propped up next to the tube would. Placed on the tube's far
-   side from the stand (+x) so it doesn't collide with the arm/ring. */
-const PHBAR = { x: 1.55, xHalf: 0.32, y0: -1.65, y1: 1.85, z: 0 };
+/* pH spectrum strip, standing upright beside the test tube — in the tube's
+   z=0 plane (the "stand-tube plane"), facing the default camera position
+   (yaw 0.5, pitch 0.28) the way a sign propped up next to the tube would.
+   Placed on the tube's left (-x), opposite the clamp stand's rod/base
+   (rotated toward +x/-z), so it doesn't collide with the arm/ring, which
+   stays centred on the tube regardless of the stand's rotation. */
+const PHBAR = { x: -1.55, xHalf: 0.32, y0: -1.65, y1: 1.85, z: 0 };
 function drawPHBarScene(ph) {
   const stops = phBarStops();
   const { x, xHalf, y0, y1, z } = PHBAR;
@@ -270,32 +271,32 @@ function drawPHBarScene(ph) {
   eng.line([[x - xHalf, y0, z], [x + xHalf, y0, z], [x + xHalf, y1, z], [x - xHalf, y1, z], [x - xHalf, y0, z]],
     { color: INK, width: 3 });
 
-  /* numbers sit to the right of the strip, painted flat into the strip's
-     own plane (not billboard sprites) so they read like ink printed on a
-     sign, not a sprite floating in front of it */
-  const flatOpts = { right: [1, 0, 0], up: [0, -1, 0], align: 'left' };
-  const numX = x + xHalf + 0.18;
+  /* numbers sit to the left of the strip (away from the tube), painted
+     flat into the strip's own plane (not billboard sprites) so they read
+     like ink printed on a sign, not a sprite floating in front of it */
+  const flatOpts = { right: [1, 0, 0], up: [0, -1, 0], align: 'right' };
+  const numX = x - xHalf - 0.18;
   for (let i = 0; i <= 14; i += 2) {
     const yy = y0 + (i / 14) * len;
-    eng.line([[x + xHalf, yy, z], [x + xHalf + 0.12, yy, z]], { color: INK, width: 2 });
+    eng.line([[x - xHalf, yy, z], [x - xHalf - 0.12, yy, z]], { color: INK, width: 2 });
     eng.flatLabel([numX, yy, z], String(i), Object.assign({ color: INK, size: 0.22, weight: 700 }, flatOpts));
   }
 
-  /* acid/neutral/alkali labels sit further right, same plane, level with
+  /* acid/neutral/alkali labels sit further left, same plane, level with
      the middle of their respective zone on the strip */
-  const labX = numX + 0.42;
+  const labX = numX - 0.42;
   eng.flatLabel([labX, y0 + (2 / 14) * len, z], 'ACID', Object.assign({ color: '#c81d25', size: 0.2, weight: 800 }, flatOpts));
   eng.flatLabel([labX, y0 + (7 / 14) * len, z], 'NEUTRAL', Object.assign({ color: '#3aa17e', size: 0.2, weight: 800 }, flatOpts));
   eng.flatLabel([labX, y0 + (12 / 14) * len, z], 'ALKALI', Object.assign({ color: '#31408f', size: 0.2, weight: 800 }, flatOpts));
 
-  /* a flat red triangle to the left of the strip, same plane, pointing
-     right at the current pH's height */
+  /* a flat red triangle to the right of the strip (tube side), same plane,
+     pointing left at the current pH's height */
   const py = y0 + (ph / 14) * len;
-  const triTipX = x - xHalf - 0.03, triW = 0.16, triH = 0.26;
+  const triTipX = x + xHalf + 0.03, triW = 0.16, triH = 0.26;
   eng.poly([
     [triTipX, py, z],
-    [triTipX - triH, py - triW, z],
-    [triTipX - triH, py + triW, z]
+    [triTipX + triH, py - triW, z],
+    [triTipX + triH, py + triW, z]
   ], '#e63946', { depthBias: -0.03 });
 }
 
@@ -345,25 +346,35 @@ function frame(tms) {
     eng.line([[-4, BENCH, g], [4, BENCH, g]], { color: '#eef2f7', width: 1.5 });
   }
 
-  /* clamp stand: base, rod, arm, ring clamp around the tube (ring sits just below the rim).
-     The base plate is elongated toward the tube (+x, the direction the arm reaches) so the
-     assembly reads as stable rather than top-heavy: rod stays at x=-2.2, base runs from
-     x=-2.75 (behind the rod) to x=-0.4 (nearly under the clamped tube). */
+  /* clamp stand holding the tube: base, rod, arm, ring clamp around the tube (ring sits
+     just below the rim). The base plate is elongated toward the tube (-x, the direction
+     the arm reaches) so the assembly reads as stable rather than top-heavy: rod sits at
+     x=2.2 before rotation, base runs from x=0.4 (nearly under the clamped tube) to x=2.75
+     (behind the rod). The whole assembly is rotated 45° (screen-counterclockwise) around
+     the tube's vertical axis so it clears the pH bar on the left; the ring circle is
+     centred on that same axis so it needs no rotation itself. In drip mode the burette
+     hangs from its own separate, unrotated stand at this stand's original position, since
+     it doesn't need to move with the tube clamp. */
+  const STAND_ROT = -Math.PI / 4;
+  const rotStand = ([x, y, z]) => [x * Math.cos(STAND_ROT) - z * Math.sin(STAND_ROT), y, x * Math.sin(STAND_ROT) + z * Math.cos(STAND_ROT)];
   const clampY = VESSEL.y1 - 0.7;
-  const clampY2 = BUR.y0 + 0.15; // second ring, holding the burette, only used in drip mode
-  const rodBottom = -2.45, rodTop = (S.dripMode ? clampY2 : clampY) + 0.4;
-  const baseX0 = -2.75, baseX1 = -0.4;
+  const rodBottom = -2.45, rodTop = clampY + 0.4;
+  const baseX0 = 0.4, baseX1 = 2.75;
   const baseHalfX = (baseX1 - baseX0) / 2, baseCx = (baseX0 + baseX1) / 2;
-  eng.box([baseCx, BENCH + 0.06, 0], baseHalfX, 0.06, 0.55, STAND_DARK, { stroke: INK, strokeWidth: 1 });
-  eng.box([-2.2, (rodBottom + rodTop) / 2, 0], 0.06, (rodTop - rodBottom) / 2, 0.06, STAND, { stroke: INK, strokeWidth: 1 });
+  eng.box([baseCx, BENCH + 0.06, 0], baseHalfX, 0.06, 0.55, STAND_DARK, { stroke: INK, strokeWidth: 1, transform: rotStand });
+  eng.box([2.2, (rodBottom + rodTop) / 2, 0], 0.06, (rodTop - rodBottom) / 2, 0.06, STAND, { stroke: INK, strokeWidth: 1, transform: rotStand });
   const ringR = VESSEL.r + 0.07;
-  eng.box([(-2.2 - ringR) / 2, clampY, 0], (2.2 - ringR) / 2, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1 });
-  eng.line(circle3(clampY, VESSEL.r + 0.07), { color: STAND_DARK, width: 6 });
+  eng.box([(2.2 + ringR) / 2, clampY, 0], (2.2 - ringR) / 2, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1, transform: rotStand });
+  eng.line(circle3(clampY, ringR), { color: STAND_DARK, width: 6 });
 
   if (S.dripMode) {
-    /* second arm + ring, holding the burette above the tube */
+    /* separate, unrotated stand at the original stand position, holding the burette above the tube */
+    const clampY2 = BUR.y0 + 0.15;
+    const rodTop2 = clampY2 + 0.4;
     const ringR2 = BUR.r + 0.06;
-    eng.box([(-2.2 - ringR2) / 2, clampY2, 0], (2.2 - ringR2) / 2, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1 });
+    eng.box([baseCx, BENCH + 0.06, 0], baseHalfX, 0.06, 0.55, STAND_DARK, { stroke: INK, strokeWidth: 1 });
+    eng.box([2.2, (rodBottom + rodTop2) / 2, 0], 0.06, (rodTop2 - rodBottom) / 2, 0.06, STAND, { stroke: INK, strokeWidth: 1 });
+    eng.box([(2.2 + ringR2) / 2, clampY2, 0], (2.2 - ringR2) / 2, 0.05, 0.05, STAND, { stroke: INK, strokeWidth: 1 });
     eng.line(circle3(clampY2, ringR2), { color: STAND_DARK, width: 5 });
 
     drawBeaker(eng, { r: BUR.r, y0: BUR.y0, y1: BUR.y1, level: buretteLevel(), liquid: 'rgba(160,190,225,0.45)' });
