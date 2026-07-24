@@ -13,26 +13,53 @@
 <script src="../lib/engine3d.js"></script>
 <script>
 'use strict';
-const INK = '#1a1a2e';
-const ALPHA_COL = '#dc2626', BETA_COL = '#2563eb', GAMMA_COL = '#f59e0b';
-const SHIELD_COL = '#94a3b8';
+const INK = '#1a1a2e', SLATE = '#475569', STEEL = '#94a3b8';
+// β keeps the repo-wide negative-charge blue (as in bohr-model / rutherford /
+// fission-fusion); γ is green, carrying no charge so no convention applies
+const ALPHA_COL = '#dc2626', BETA_COL = '#2563eb', GAMMA_COL = '#16a34a';
+const PROTON_COL = '#e63946', NEUTRON_COL = '#94a3b8';
 
-/* how far each radiation type gets through each shield, in "lanes" (0..1 = fraction of the shield thickness it penetrates before being stopped; 1 = passes through, reduced) */
+/* fraction of each radiation type that gets through each shield */
 const PENETRATION = {
   none: { alpha: 1, beta: 1, gamma: 1 },
   paper: { alpha: 0, beta: 1, gamma: 1 },
   aluminium: { alpha: 0, beta: 0, gamma: 0.6 },
   lead: { alpha: 0, beta: 0, gamma: 0.15 }
 };
-const SHIELD_LABEL = { none: 'No shielding', paper: 'Paper', aluminium: 'A few mm of aluminium', lead: 'Thick lead' };
+const SHIELDS = {
+  none: { label: 'No shielding', th: 0, col: null },
+  // paper keeps near-flat face shading so it reads as a bright white sheet
+  // rather than another grey slab like the aluminium
+  paper: { label: 'Sheet of paper', th: 0.04, col: '#fffdf7', shades: [0.99, 0.99, 0.95, 0.95, 1.0, 0.9] },
+  aluminium: { label: 'A few mm of aluminium', th: 0.3, col: '#cbd5e1' },
+  lead: { label: 'Thick lead', th: 0.7, col: '#475569' }
+};
+
+/* --- scene layout: beams run along +x, the three types stacked in y so they
+       never overlap at any camera angle --- */
+const FLOOR = -2.7;
+const SOURCE_X = -6.6, SOURCE_HX = 0.75;
+const SHIELD_X = -3.3;
+const D_MIN = 5, D_MAX = 10;              // detector distance from source, metres (1 unit = 1 m)
+const ALPHA_AIR_RANGE = 3.9;              // where α runs out of puff in air (schematic — really a few cm)
+
+/* Particle radii are drawn to a real (log-ish) size ordering: an α is a
+   4-nucleon cluster, a β is a near-point electron ~1/7300 of its mass. */
+const NUCLEON_R = 0.17, BETA_R = 0.075;
+
+const LANES = [
+  { key: 'alpha', y: 1.35, col: ALPHA_COL, glyph: 'α', name: 'alpha', what: 'helium nucleus' },
+  { key: 'beta', y: 0, col: BETA_COL, glyph: 'β', name: 'beta', what: 'electron  e⁻' },
+  { key: 'gamma', y: -1.35, col: GAMMA_COL, glyph: 'γ', name: 'gamma', what: 'EM wave, no mass' }
+];
 
 const S = {
   shield: 'none',
-  distance: 3,
-  showAlpha: true, showBeta: true, showGamma: true, labels: true
+  distance: 6.5,
+  showAlpha: true, showBeta: true, showGamma: true, labels: true, showPanel: true
 };
 
-const ui = SimUI({ back: '../index.html', title: 'Ionising Radiation & Safety', subtitle: 'Penetrating power of α, β, γ — drag to orbit, scroll to zoom' });
+const ui = SimUI({ back: '../index.html', title: 'Ionising Radiation & Safety', subtitle: 'How far α, β and γ get through matter — drag to orbit, scroll to zoom' });
 
 const gsh = ui.group('Shielding');
 ui.segment(gsh, null, [
@@ -43,158 +70,338 @@ ui.segment(gsh, null, [
 ], 'none', v => S.shield = v);
 
 const gd = ui.group('Distance');
-ui.slider(gd, 'Distance from source', { min: 1, max: 8, step: 0.5, value: 3, fmt: v => v.toFixed(1) + ' m' }, v => S.distance = v);
+ui.slider(gd, 'Source → detector', { min: D_MIN, max: D_MAX, step: 0.5, value: S.distance, fmt: v => v.toFixed(1) + ' m' }, v => S.distance = v);
 
 const gv = ui.group('Show / hide');
 ui.toggle(gv, 'Alpha (α)', true, v => S.showAlpha = v, { swatch: ALPHA_COL });
 ui.toggle(gv, 'Beta (β)', true, v => S.showBeta = v, { swatch: BETA_COL });
 ui.toggle(gv, 'Gamma (γ)', true, v => S.showGamma = v, { swatch: GAMMA_COL });
 ui.toggle(gv, 'Labels', true, v => S.labels = v);
+ui.toggle(gv, 'Dose panel', true, v => S.showPanel = v);
 
 const gr = ui.group('Readings');
-const roDose = ui.readout(gr, 'Relative dose at detector', '');
+const roDose = ui.readout(gr, 'Total dose at detector', '');
 
 const foot = ui.footer('');
 ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
 
 const { canvas, ctx, W, H } = SimCanvas();
-const eng = Engine3D(canvas, { dist: 15, yaw: 0.35, pitch: 0.2 });
+const eng = Engine3D(canvas, { dist: 17, yaw: 0.42, pitch: 0.22, target: [-3.4, -0.2, 0] });
 
-const LANES = [
-  { key: 'alpha', z: -1.6, col: ALPHA_COL, label: 'α (helium nucleus)' },
-  { key: 'beta', z: 0, col: BETA_COL, label: 'β (fast electron)' },
-  { key: 'gamma', z: 1.6, col: GAMMA_COL, label: 'γ (EM wave, no mass)' }
-];
-const SOURCE_X = -6, SHIELD_X = -1;
-let particles = [], spawnTimers = { alpha: 0, beta: 0, gamma: 0 };
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+function mixHex(a, b, t) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const r = Math.round(((pa >> 16) & 255) + (((pb >> 16) & 255) - ((pa >> 16) & 255)) * t);
+  const g = Math.round(((pa >> 8) & 255) + (((pb >> 8) & 255) - ((pa >> 8) & 255)) * t);
+  const bl = Math.round((pa & 255) + ((pb & 255) - (pa & 255)) * t);
+  return '#' + [r, g, bl].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+/* camera-facing basis, for bursts that read as flat starbursts from any angle */
+function screenBasis() {
+  const cy = Math.cos(eng.cam.yaw), sy = Math.sin(eng.cam.yaw);
+  const cp = Math.cos(eng.cam.pitch), sp = Math.sin(eng.cam.pitch);
+  return { right: [cy, 0, -sy], up: [-sy * sp, cp, -cy * sp] };
+}
+
+function detectorX() { return SOURCE_X + S.distance; }
+function shieldFace() { return SHIELD_X - SHIELDS[S.shield].th; }
+/* dose scale: 100 = unshielded dose 1 m from the source */
+function doseOf(key) {
+  if (key === 'alpha') return 0;   // α never survives metres of air, shield or not
+  const on = { beta: S.showBeta, gamma: S.showGamma }[key];
+  if (!on) return 0;
+  return 100 * PENETRATION[S.shield][key] / (S.distance * S.distance);
+}
+const DOSE_MAX = 100 / (D_MIN * D_MIN);
+
+/* --- particles --- */
+let particles = [], bursts = [], spawnTimers = { alpha: 0, beta: 0, gamma: 0 };
+const lampLit = { alpha: 0, beta: 0, gamma: 0 };
 let simT = 0, lastT = 0;
 
-function detectorX() { return SHIELD_X + 1.2 + S.distance; }
+const SPEED = { alpha: 2.4, beta: 4.2, gamma: 6.5 };
+/* spaced so each lane reads as separate particles rather than one continuous
+   stream: gap × speed must comfortably exceed the drawn length of one quantum */
+const GAP = { alpha: 0.55, beta: 0.3, gamma: 0.4 };
 
-/* alpha drawn as its actual structure: a helium nucleus, 2 protons + 2 neutrons */
-const PROTON_COL = '#e63946';
+function addBurst(p, col, big) {
+  bursts.push({ p, col, age: 0, life: big ? 0.45 : 0.55, seed: Math.random() * Math.PI * 2, big: !!big });
+}
+
+/* α drawn as what it actually is: a helium nucleus, 2 protons + 2 neutrons —
+   deliberately far bigger than the β electron beside it (~7300× the mass).
+   Tetrahedral offsets are 0.578 × the nucleon radius, so the four spheres
+   overlap into one bound blob rather than four loose balls — same packing
+   ratio as the nuclei in fission-fusion.html. */
+const NOFF = NUCLEON_R * 0.578;
 const ALPHA_NUCLEONS = [
-  { off: [0.075, 0.075, 0.075], col: PROTON_COL },
-  { off: [0.075, -0.075, -0.075], col: '#94a3b8' },
-  { off: [-0.075, 0.075, -0.075], col: '#94a3b8' },
-  { off: [-0.075, -0.075, 0.075], col: PROTON_COL }
+  { off: [NOFF, NOFF, NOFF], col: PROTON_COL },
+  { off: [NOFF, -NOFF, -NOFF], col: NEUTRON_COL },
+  { off: [-NOFF, NOFF, -NOFF], col: NEUTRON_COL },
+  { off: [-NOFF, -NOFF, NOFF], col: PROTON_COL }
 ];
 
-function drawAlpha(x, z, fade) {
-  const c = [x, 0, z];
+function drawAlpha(p, y, fade) {
+  const c = [p.x, y, 0];
   const cd = eng.project(c).depth;
+  const th = p.phase + simT * 2.2, ct = Math.cos(th), st = Math.sin(th);
   const parts = ALPHA_NUCLEONS.map(n => {
-    const pos = [c[0] + n.off[0] * fade, c[1] + n.off[1] * fade, c[2] + n.off[2] * fade];
+    const oy = n.off[1] * ct - n.off[2] * st, oz = n.off[1] * st + n.off[2] * ct;
+    const pos = [c[0] + n.off[0] * fade, c[1] + oy * fade, c[2] + oz * fade];
     return { pos, col: n.col, d: eng.project(pos).depth };
   });
-  parts.sort((a, b) => b.d - a.d); // far → near, whole cluster sorts as one unit via depthOverride
+  parts.sort((a, b) => b.d - a.d);           // draw far → near; whole cluster sorts as one unit
   for (const n of parts) {
-    eng.sphere(n.pos, 0.09 * fade, n.col, { depthOverride: cd, stroke: 'rgba(26,26,46,0.35)', strokeWidth: 1 });
+    eng.sphere(n.pos, NUCLEON_R * fade, n.col, { depthOverride: cd, stroke: rgba(INK, 0.4), strokeWidth: 1.5 });
   }
 }
 
-function drawGamma(x, z, fade) {
-  const L = 1.2, N = 26, cycles = 3.5;
+function drawBeta(p, y, fade) {
+  eng.sphere([p.x, y, 0], BETA_R * fade, BETA_COL, { stroke: rgba(INK, 0.35), strokeWidth: 1.2 });
+}
+
+/* A wave packet running from `from` to `to`, oscillating in +y, with a sin
+   envelope so it tapers off at both ends instead of stopping dead — same
+   treatment as the photons in the Bohr model sim. */
+function sinePts(from, to, wavelength, amp) {
+  const d = v3.sub(to, from), L = v3.len(d);
+  if (L < 1e-6) return [from.slice()];
+  const dir = v3.mul(d, 1 / L);
+  const N = Math.max(24, Math.min(240, Math.round((L / wavelength) * 16)));
   const pts = [];
   for (let i = 0; i <= N; i++) {
-    const u = i / N;
-    const px = x - L + u * L;
-    if (px < SOURCE_X) continue; // tail still inside the source box
-    pts.push([px, 0.18 * fade * Math.sin(u * Math.PI * 2 * cycles + x * 6), z]);
+    const f = i / N, s = f * L;
+    const yy = amp * Math.sin(Math.PI * f) * Math.sin((s / wavelength) * Math.PI * 2);
+    pts.push([from[0] + dir[0] * s, from[1] + dir[1] * s + yy, from[2] + dir[2] * s]);
   }
-  if (pts.length < 2) return;
-  eng.line(pts, { color: GAMMA_COL, width: 3 * Math.max(fade, 0.35), arrow: true });
+  return pts;
 }
 
-function frame(tms) {
-  const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t; simT += dt;
+const GAMMA_PACKET = 1.5, GAMMA_WAVELENGTH = 0.42;
+function drawGamma(p, y, fade) {
+  const head = p.x;
+  const tail = Math.max(SOURCE_X + SOURCE_HX, head - GAMMA_PACKET);
+  if (head - tail < 0.3) return;                       // still emerging from the source
+  const pts = sinePts([tail, y, 0], [head, y, 0], GAMMA_WAVELENGTH, 0.3 * fade);
+  eng.line(pts, { color: rgba(GAMMA_COL, Math.max(fade, 0.25)), width: 3.5 });
+}
 
+function stepPhysics(dt) {
   const pen = PENETRATION[S.shield];
+  const face = shieldFace();
+  const dX = detectorX();
+
   for (const lane of LANES) {
-    const show = { alpha: S.showAlpha, beta: S.showBeta, gamma: S.showGamma }[lane.key];
-    if (!show) continue;
+    if (!{ alpha: S.showAlpha, beta: S.showBeta, gamma: S.showGamma }[lane.key]) continue;
     spawnTimers[lane.key] -= dt;
     if (spawnTimers[lane.key] <= 0) {
       particles.push({
-        key: lane.key, x: SOURCE_X, z: lane.z,
-        speed: lane.key === 'gamma' ? 6 : (lane.key === 'beta' ? 4.5 : 2.6),
-        stopped: false, fade: 1, checkedShield: false,
-        // alpha only travels a few cm in air — it peters out just past the shield plane
-        airStop: lane.key === 'alpha' ? SHIELD_X + 1 + Math.random() * 0.5 : Infinity
+        key: lane.key, x: SOURCE_X + SOURCE_HX, speed: SPEED[lane.key],
+        stopped: false, fade: 1, checked: false, phase: Math.random() * 6.28,
+        airStop: lane.key === 'alpha' ? SOURCE_X + ALPHA_AIR_RANGE + Math.random() * 0.5 : Infinity
       });
-      spawnTimers[lane.key] = lane.key === 'alpha' ? 0.35 : 0.2;
+      spawnTimers[lane.key] = GAP[lane.key] * (0.8 + Math.random() * 0.4);
     }
   }
-  const dX = detectorX();
+
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
-    if (!p.stopped) {
-      p.x += p.speed * dt;
-      if (p.x >= SHIELD_X && !p.checkedShield) {
-        p.checkedShield = true;
-        const passes = S.shield === 'none' ? true : Math.random() < pen[p.key];
-        if (!passes) { p.stopped = true; p.x = SHIELD_X + (Math.random() - 0.5) * 0.2; }
-      }
-      if (!p.stopped && p.x >= p.airStop) p.stopped = true;
-    } else {
-      p.fade -= dt; // stopped particles fade out quickly instead of piling up
-      if (p.fade <= 0) { particles.splice(i, 1); continue; }
+    const lane = LANES.find(l => l.key === p.key);
+    if (p.stopped) {
+      p.fade -= dt * 3;
+      if (p.fade <= 0) particles.splice(i, 1);
+      continue;
     }
-    if (!p.stopped && p.x > dX + 3) particles.splice(i, 1);
+    p.x += p.speed * dt;
+
+    if (S.shield !== 'none' && p.x >= face && !p.checked) {
+      p.checked = true;
+      if (!(Math.random() < pen[p.key])) {
+        p.stopped = true;
+        p.x = face - 0.05;
+        addBurst([p.x, lane.y, 0], lane.col);
+        continue;
+      }
+    }
+    if (p.x >= p.airStop) {                            // α runs out of range in air
+      p.stopped = true;
+      addBurst([p.x, lane.y, 0], lane.col);
+      continue;
+    }
+    if (p.x >= dX - 0.2) {                             // absorbed by the detector
+      lampLit[p.key] = 1;
+      addBurst([dX - 0.25, lane.y, 0], lane.col, true);
+      particles.splice(i, 1);
+    }
   }
-  if (particles.length > 400) particles.splice(0, particles.length - 400);
+  if (particles.length > 300) particles.splice(0, particles.length - 300);
 
-  ctx.clearRect(0, 0, W(), H());
-  eng.begin(W(), H());
-
-  for (let g = -3; g <= 3.01; g += 1.5) {
-    eng.line([[g, -2.2, -3], [g, -2.2, 3]], { color: '#eef2f7', width: 1.5 });
-    eng.line([[-3, -2.2, g], [3, -2.2, g]], { color: '#eef2f7', width: 1.5 });
+  for (let i = bursts.length - 1; i >= 0; i--) {
+    bursts[i].age += dt;
+    if (bursts[i].age > bursts[i].life) bursts.splice(i, 1);
   }
+  for (const k in lampLit) lampLit[k] = Math.max(0, lampLit[k] - dt * 3.5);
+}
 
-  // source
-  eng.box([SOURCE_X, 0, 0], 0.35, 1.8, 1.8, '#facc15', { stroke: INK, strokeWidth: 2 });
-  if (S.labels) eng.label([SOURCE_X, 2.1, 0], 'radioactive source', { color: '#78350f', size: 15, lift: 2 });
+/* A long straight line drawn as ONE segment sorts on its midpoint's depth, so
+   it wrongly paints over anything standing nearer than that midpoint. Split it
+   so each piece sorts where it actually is. */
+function seg(a, b, n) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) pts.push(v3.lerp(a, b, i / n));
+  return pts;
+}
 
-  // shield
-  if (S.shield !== 'none') {
-    const shieldCol = S.shield === 'paper' ? '#f8fafc' : (S.shield === 'aluminium' ? '#cbd5e1' : '#475569');
-    const thickness = S.shield === 'paper' ? 0.06 : (S.shield === 'aluminium' ? 0.3 : 0.65);
-    eng.box([SHIELD_X, 0, 0], thickness, 1.9, 1.9, shieldCol, { stroke: INK, strokeWidth: 2 });
-    if (S.labels) eng.label([SHIELD_X, 2.15, 0], SHIELD_LABEL[S.shield], { color: '#475569', size: 15, lift: 2 });
-  }
+function drawScene() {
+  const dX = detectorX();
+  const sh = SHIELDS[S.shield];
 
-  // detector
-  eng.box([dX, 0, 0], 0.2, 1.4, 1.4, '#1e293b', { stroke: INK, strokeWidth: 2 });
-  if (S.labels) eng.label([dX, 1.7, 0], 'detector', { color: '#475569', size: 15, lift: 2 });
+  /* bench grid — pinned to a large depth so the floor can never sort in front
+     of the kit standing on it */
+  const FLOOR_DEPTH = 900;
+  for (let g = -9; g <= 9.01; g += 1.5) eng.line([[g, FLOOR, -4.5], [g, FLOOR, 4.5]], { color: '#eef2f7', width: 1.5, depthOverride: FLOOR_DEPTH });
+  for (let g = -4.5; g <= 4.51; g += 1.5) eng.line([[-9, FLOOR, g], [9, FLOOR, g]], { color: '#eef2f7', width: 1.5, depthOverride: FLOOR_DEPTH });
 
+  /* faint guide track down each lane, so a blocked beam's missing half is obvious */
   for (const lane of LANES) {
-    if (S.labels) eng.label([SOURCE_X - 0.9, 0, lane.z], lane.label, { color: lane.col, size: 13, lift: 2 });
+    if (!{ alpha: S.showAlpha, beta: S.showBeta, gamma: S.showGamma }[lane.key]) continue;
+    eng.line(seg([SOURCE_X + SOURCE_HX, lane.y, 0], [dX - 0.25, lane.y, 0], 16),
+      { color: rgba(lane.col, 0.14), width: 2, dash: [7, 9] });
   }
 
+  /* source: a hazard-yellow pot sitting on the bench */
+  eng.box([SOURCE_X, FLOOR + 2.35, 0], SOURCE_HX, 2.35, 1.0, '#facc15', { stroke: INK, strokeWidth: 2.5 });
+  if (S.labels) eng.label([SOURCE_X, FLOOR + 5.15, 0], 'radioactive source', { color: '#92400e', size: 16, lift: 3 });
+
+  /* shield slab */
+  if (S.shield !== 'none') {
+    eng.box([SHIELD_X, FLOOR + 2.43, 0], sh.th, 2.43, 1.2, sh.col, { stroke: INK, strokeWidth: 2.5, shades: sh.shades });
+    if (S.labels) eng.label([SHIELD_X, FLOOR + 5.85, 0], sh.label, { color: SLATE, size: 16, lift: 3 });
+  }
+
+  /* detector: panel on a stand, with one lamp per lane that flashes when hit */
+  eng.box([dX, FLOOR + 0.06, 0], 0.45, 0.06, 0.45, STEEL, { stroke: INK, strokeWidth: 2 });
+  eng.box([dX, FLOOR + 0.5, 0], 0.09, 0.5, 0.09, STEEL, { stroke: INK, strokeWidth: 1.5 });
+  eng.box([dX, 0, 0], 0.16, 1.85, 1.0, '#e2e8f0', { stroke: INK, strokeWidth: 2.5 });
+  /* Lamps sit proud of the panel's front face. A lamp low in the frame is
+     genuinely further from the camera than the face's centre, so left to sort
+     itself it disappears behind the panel — pin all three to the face's own
+     depth instead. Recomputed each frame, so orbiting round the back still
+     correctly hides them. */
+  const faceDepth = eng.project([dX + 0.16, 0, 0]).depth;
+  for (const lane of LANES) {
+    const lit = lampLit[lane.key];
+    const col = lit > 0.02 ? mixHex('#94a3b8', lane.col, Math.min(1, lit * 1.6)) : '#94a3b8';
+    eng.sphere([dX + 0.24, lane.y, 0], 0.17, col, { stroke: INK, strokeWidth: 2, depthOverride: faceDepth - 0.4 });
+  }
+  if (S.labels) eng.label([dX, 2.35, 0], 'detector', { color: SLATE, size: 16, lift: 3 });
+
+  /* lane tags right where each beam leaves the source (the full names live in
+     the dose panel, where they don't sit on top of the source box) */
+  if (S.labels) {
+    for (const lane of LANES) {
+      if (!{ alpha: S.showAlpha, beta: S.showBeta, gamma: S.showGamma }[lane.key]) continue;
+      eng.label([SOURCE_X + SOURCE_HX + 0.85, lane.y + 0.62, 0], lane.glyph, { color: lane.col, size: 26, lift: 3 });
+    }
+    if (S.showAlpha && S.shield === 'none') {
+      eng.label([SOURCE_X + ALPHA_AIR_RANGE + 0.3, LANES[0].y + 0.55, 0], 'absorbed by air',
+        { color: ALPHA_COL, size: 13, lift: 3 });
+    }
+  }
+
+  /* distance ruler along the front of the bench */
+  const zr = 2.0, yr = FLOOR + 0.03;
+  eng.line(seg([SOURCE_X, yr, zr], [dX, yr, zr], 12), { color: STEEL, width: 2, dash: [6, 5] });
+  eng.line([[SOURCE_X, yr, zr - 0.3], [SOURCE_X, yr, zr + 0.3]], { color: STEEL, width: 2 });
+  eng.line([[dX, yr, zr - 0.3], [dX, yr, zr + 0.3]], { color: STEEL, width: 2 });
+  // label pushed further forward than the line so it clears the shield slab behind it
+  if (S.labels) eng.label([(SOURCE_X + dX) / 2, yr + 0.3, zr + 1.1], S.distance.toFixed(1) + ' m', { color: SLATE, size: 15, lift: 1 });
+
+  /* particles */
   for (const p of particles) {
     const lane = LANES.find(l => l.key === p.key);
     const fade = p.stopped ? p.fade : 1;
-    if (p.key === 'alpha') drawAlpha(p.x, lane.z, fade);
-    else if (p.key === 'gamma') drawGamma(p.x, lane.z, fade);
-    else eng.sphere([p.x, 0, lane.z], 0.07 * fade, lane.col, { stroke: 'rgba(26,26,46,0.3)', strokeWidth: 1 });
+    if (p.key === 'alpha') drawAlpha(p, lane.y, fade);
+    else if (p.key === 'beta') drawBeta(p, lane.y, fade);
+    else drawGamma(p, lane.y, fade);
   }
 
+  /* absorption / detection bursts */
+  const { right, up } = screenBasis();
+  for (const b of bursts) {
+    const f = b.age / b.life, a = Math.max(0, 1 - f);
+    const rays = b.big ? 8 : 6;
+    const len = (b.big ? 0.22 : 0.16) + f * (b.big ? 0.5 : 0.38);
+    for (let k = 0; k < rays; k++) {
+      const ang = (k / rays) * Math.PI * 2 + b.seed;
+      const d = v3.add(v3.mul(right, Math.cos(ang)), v3.mul(up, Math.sin(ang)));
+      eng.line([v3.add(b.p, v3.mul(d, len * 0.45)), v3.add(b.p, v3.mul(d, len))],
+        { color: rgba(b.col, 0.85 * a), width: 4 });
+    }
+  }
+}
+
+/* --- 2D overlay: what actually reaches the detector, bottom-left --- */
+function drawDosePanel() {
+  const gw = Math.min(440, W() * 0.42), gh = 152;
+  const gx = 20, gy = H() - gh - 46;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(gx, gy, gw, gh, 12); else ctx.rect(gx, gy, gw, gh);
+  ctx.fill(); ctx.stroke();
+
+  Draw.label(ctx, 'Dose reaching the detector', gx + 16, gy + 24, { size: 15, color: INK, align: 'left' });
+  Draw.label(ctx, '100 = unshielded, 1 m away', gx + 16, gy + 43, { size: 12, color: SLATE, align: 'left', weight: 600 });
+
+  const bx = gx + 168, bw = gw - 168 - 70;
+  LANES.forEach((lane, i) => {
+    const y = gy + 68 + i * 27;
+    const on = { alpha: S.showAlpha, beta: S.showBeta, gamma: S.showGamma }[lane.key];
+    const dose = doseOf(lane.key);
+    Draw.label(ctx, lane.glyph, gx + 24, y, { size: 20, color: on ? lane.col : '#cbd5e1', align: 'center' });
+    Draw.label(ctx, lane.what, gx + 42, y + 1, { size: 12.5, color: on ? SLATE : '#cbd5e1', align: 'left', weight: 600 });
+    ctx.fillStyle = '#eef2f7';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, y - 8, bw, 16, 8); else ctx.rect(bx, y - 8, bw, 16);
+    ctx.fill();
+    const frac = Math.max(0, Math.min(1, dose / DOSE_MAX));
+    if (frac > 0.001) {
+      ctx.fillStyle = lane.col;
+      ctx.beginPath();
+      const w = Math.max(16, bw * frac);
+      if (ctx.roundRect) ctx.roundRect(bx, y - 8, w, 16, 8); else ctx.rect(bx, y - 8, w, 16);
+      ctx.fill();
+    }
+    const txt = !on ? 'hidden' : (dose < 0.005 ? 'blocked' : dose.toFixed(1));
+    Draw.label(ctx, txt, gx + gw - 16, y, { size: 15, color: dose < 0.005 ? SLATE : lane.col, align: 'right' });
+  });
+}
+
+function frame(tms) {
+  // clamped at both ends: fade and burst age scale the drawn geometry, so a
+  // negative dt (clock skew, a restored tab) would grow them without bound
+  const t = tms / 1000, dt = Math.max(0, Math.min(t - lastT, 0.04)); lastT = t; simT += dt;
+  stepPhysics(dt);
+
+  ctx.clearRect(0, 0, W(), H());
+  eng.begin(W(), H());
+  drawScene();
   eng.flush(ctx);
+  if (S.showPanel) drawDosePanel();
 
-  // relative dose at detector: inverse-square with distance, times whichever types get through.
-  // Alpha never contributes — its range in air is only a few cm, far short of the detector.
-  let doseSum = 0;
-  for (const key of ['beta', 'gamma']) {
-    const show = { beta: S.showBeta, gamma: S.showGamma }[key];
-    if (!show) continue;
-    doseSum += pen[key] / (S.distance * S.distance);
-  }
-  roDose.set(doseSum.toFixed(2) + ' (arbitrary units)');
+  const total = doseOf('alpha') + doseOf('beta') + doseOf('gamma');
+  roDose.set(total.toFixed(1));
 
-  foot.set('<b>Penetrating power:</b> α is stopped by just a few cm of air &mdash; or by paper/skin &mdash; so it never reaches the detector; β by a few mm of aluminium; ' +
-    'γ is never fully stopped &mdash; only reduced by thick lead/concrete. Dose also falls off with distance (inverse-square law) &mdash; ' +
-    '<b>time, distance, and shielding</b> are the three ways radiation workers stay safe.');
+  foot.set('An <b>α</b> is a whole helium nucleus — 2 protons + 2 neutrons, about <b>7300× the mass of the β electron</b> — ' +
+    'so it is big, slow and easily stopped: a sheet of paper, or a few cm of air, and it never reaches the detector. ' +
+    '<b>β</b> sails through paper but is stopped by a few mm of aluminium. ' +
+    '<b>γ</b> has no mass or charge at all and is never fully stopped, only reduced, even by thick lead. ' +
+    'Dose also falls off as $1/r^2$ with distance — <b>time, distance and shielding</b> are the three ways radiation workers stay safe.');
 
   requestAnimationFrame(frame);
 }
