@@ -221,7 +221,10 @@ patterns worth copying:
     `panel-head` to collapse/expand), anchored just below the header —
     `lib/ui.js` measures the header's actual rendered height (title +
     subtitle vary per sim) and repositions on resize, so don't hardcode a
-    `top` offset for it yourself.
+    `top` offset for it yourself. `?keyIdeas=0` in the page URL suppresses it
+    entirely (`set()` becomes a no-op) — for embedding a sim where the
+    surrounding page already states the key idea; every sim gets this for
+    free, nothing to opt into per-page.
   - `ui.hint(text)` — small grey text bottom-left
 - `SimCanvas()` → `{canvas, ctx, W(), H()}` — DPR-corrected full-viewport
   canvas (`W()`/`H()` are CSS-pixel getters).
