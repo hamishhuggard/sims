@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Electric Fields — 3D</title>
 <link rel="stylesheet" href="../sim.css">
+<style>
+  /* Arrangement has 7 options — the shared pill-row segment control wraps
+     unevenly at that count, so stack it into one full-width column here only. */
+  .gp-arrangement .ctl-seg { flex-direction: column; }
+  .gp-arrangement .ctl-seg button { width: 100%; }
+</style>
 </head>
 <body>
 <canvas id="sim"></canvas>
@@ -17,38 +23,91 @@ const INK = '#1a1a2e', E_COL = '#ea580c', F_COL = '#dc2626', G_COL = '#16a34a';
 const POS = '#e63946', NEG = '#2563eb';
 
 const S = {
-  preset: 'single+',
+  preset: 'point',
+  mode: '2d',
   Q: 1,
-  testSign: 1,
+  charge1: 1, charge2: 0, testCharge: 1,
   tx: 2.6, tz: 1.8,
-  lines: true, vectors: false, test: true, labels: true
+  tr: Math.hypot(2.6, 1.8), ttheta: Math.atan2(1.8, 2.6),
+  lines: true, vectors: false, labels: true
 };
+
+/* two independently-toggled point-charge slots (+/−/off each) instead of fixed
+   single/dipole/twoplus presets. A lone active charge always sits at the origin
+   (see chargePositions()) — only when both are active do they split to ∓2. */
+function chargePositions() {
+  const on1 = S.charge1 !== 0, on2 = S.charge2 !== 0;
+  if (on1 && on2) return [[-2, 0, 0], [2, 0, 0]];
+  if (on1) return [[0, 0, 0], null];
+  if (on2) return [null, [0, 0, 0]];
+  return [null, null];
+}
+
+/* single point charge (or earth's radial gravity well): field magnitude only
+   depends on r, so the test charge is moved in polar coords (r, θ) there
+   instead of cartesian x/y — makes the inverse-square falloff and radial
+   symmetry the slider itself demonstrates. Everything else keeps cartesian
+   x/y (no single centre to be radial about). */
+function isRadialPreset() { return (S.preset === 'point' && charges().length === 1) || S.preset === 'earth'; }
+function testChargePos() {
+  return isRadialPreset()
+    ? { x: S.tr * Math.cos(S.ttheta), z: S.tr * Math.sin(S.ttheta) }
+    : { x: S.tx, z: S.tz };
+}
 
 const ui = SimUI({ back: '../index.html', title: 'Electric Fields in 3D', subtitle: 'Field lines around charges, uniform fields, and the gravity analogy' });
 
+const gView = ui.group('View');
+ui.segment(gView, null, [
+  { value: '2d', label: '2D' },
+  { value: '3d', label: '3D' }
+], '2d', v => { S.mode = v; cachedLines = null; setCamera(v); });
+
 const gp = ui.group('Arrangement');
+gp.classList.add('gp-arrangement');
 ui.segment(gp, null, [
-  { value: 'single+', label: '+ charge' },
-  { value: 'single-', label: '− charge' },
-  { value: 'dipole', label: '+ and −' },
-  { value: 'twoplus', label: '+ and +' },
+  { value: 'point', label: 'Point charges' },
   { value: 'plates', label: 'Charged plates' },
-  { value: 'earth', label: 'Gravity (Earth)' }
-], 'single+', v => { S.preset = v; cachedLines = null; });
+  { value: 'earth', label: 'Gravity (Earth)' },
+  { value: 'surfacegravity', label: 'Surface gravity' }
+], 'point', v => { S.preset = v; cachedLines = null; if (S.mode === '2d') setCamera('2d'); updateVisibility(); });
+
+const gc = ui.group('Charges');
+const chargeSegOpts = [
+  { value: '1', label: '+' },
+  { value: '-1', label: '−' },
+  { value: '0', label: 'off' }
+];
+const chargeWrap = document.createElement('div');
+gc.appendChild(chargeWrap);
+ui.segment(chargeWrap, 'Charge 1', chargeSegOpts, '1', v => { S.charge1 = parseInt(v); cachedLines = null; updateVisibility(); });
+ui.segment(chargeWrap, 'Charge 2', chargeSegOpts, '0', v => { S.charge2 = parseInt(v); cachedLines = null; updateVisibility(); });
+ui.segment(gc, 'Test charge', chargeSegOpts, '1', v => S.testCharge = parseInt(v));
 
 const gv = ui.group('Values');
 ui.slider(gv, 'Charge size Q', { min: 0.3, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1) + ' C' }, v => S.Q = v);
-ui.segment(gv, 'Test charge', [
-  { value: '1', label: '+ test' },
-  { value: '-1', label: '− test' }
-], '1', v => S.testSign = parseInt(v));
-ui.slider(gv, 'Test charge x', { min: -4.5, max: 4.5, step: 0.1, value: 2.6, fmt: v => v.toFixed(1) }, v => S.tx = v);
-ui.slider(gv, 'Test charge z', { min: -4.5, max: 4.5, step: 0.1, value: 1.8, fmt: v => v.toFixed(1) }, v => S.tz = v);
+
+const cartWrap = document.createElement('div');
+gv.appendChild(cartWrap);
+ui.slider(cartWrap, 'Test charge x', { min: -4.5, max: 4.5, step: 0.1, value: 2.6, fmt: v => v.toFixed(1) }, v => S.tx = v);
+ui.slider(cartWrap, 'Test charge y', { min: -4.5, max: 4.5, step: 0.1, value: 1.8, fmt: v => v.toFixed(1) }, v => S.tz = v);
+
+const radWrap = document.createElement('div');
+gv.appendChild(radWrap);
+ui.slider(radWrap, 'Test charge r', { min: 1.5, max: 5.5, step: 0.1, value: S.tr, fmt: v => v.toFixed(1) }, v => S.tr = v);
+ui.slider(radWrap, 'Test charge θ', { min: 0, max: 360, step: 5, value: S.ttheta * 180 / Math.PI, fmt: v => v.toFixed(0) + '°' }, v => S.ttheta = v * Math.PI / 180);
+
+function updateVisibility() {
+  chargeWrap.style.display = S.preset === 'point' ? '' : 'none';
+  const radial = isRadialPreset();
+  cartWrap.style.display = radial ? 'none' : '';
+  radWrap.style.display = radial ? '' : 'none';
+}
+updateVisibility();
 
 const gs = ui.group('Show / hide');
 ui.toggle(gs, 'Field lines', true, v => S.lines = v, { swatch: E_COL });
 ui.toggle(gs, 'Field vectors (grid)', false, v => S.vectors = v, { swatch: E_COL });
-ui.toggle(gs, 'Test charge + force', true, v => S.test = v, { swatch: F_COL });
 ui.toggle(gs, 'Labels', true, v => S.labels = v);
 
 const gr = ui.group('Readings');
@@ -60,21 +119,47 @@ ui.hint('Drag to rotate · shift+drag to pan · scroll / pinch to zoom');
 
 const { canvas, ctx, W, H } = SimCanvas();
 const eng = Engine3D(canvas, { dist: 15, yaw: 0.5, pitch: 0.35 });
+setCamera(S.mode); // 2D is the default view — match the camera to it at boot
+
+/* 2D mode: everything (charges, test charge, field lines) already lives on
+   a single plane (y = 0 for point-charge/earth presets, z = 0 for the
+   plates preset — see SEED_DIRS_2D below) — the toggle just re-aims the
+   camera to look at that plane face-on instead of tracing a genuinely flat
+   scene from a different geometry. Pitch is capped at the engine's own
+   drag clamp (±1.45 rad, not a full 90°) so dragging afterwards doesn't
+   snap the view — visually indistinguishable from true top-down. */
+function setCamera(mode) {
+  if (mode === '2d') {
+    eng.cam.yaw = 0;
+    eng.cam.pitch = (S.preset === 'plates' || S.preset === 'surfacegravity') ? 0 : 1.45;
+    eng.cam.dist = 15;
+    eng.cam.target = [0, 0, 0];
+  } else {
+    eng.cam.yaw = 0.5;
+    eng.cam.pitch = 0.35;
+    eng.cam.dist = 15;
+    eng.cam.target = [0, 0, 0];
+  }
+}
 
 /* ---------- charge configurations ---------- */
 function charges() {
-  switch (S.preset) {
-    case 'single+': return [{ p: [0, 0, 0], q: 1 }];
-    case 'single-': return [{ p: [0, 0, 0], q: -1 }];
-    case 'dipole': return [{ p: [-2, 0, 0], q: 1 }, { p: [2, 0, 0], q: -1 }];
-    case 'twoplus': return [{ p: [-2, 0, 0], q: 1 }, { p: [2, 0, 0], q: 1 }];
-    default: return [];
-  }
+  if (S.preset !== 'point') return [];
+  const [p1, p2] = chargePositions();
+  const list = [];
+  if (p1) list.push({ p: p1, q: S.charge1 });
+  if (p2) list.push({ p: p2, q: S.charge2 });
+  return list;
 }
 
 function fieldAt(p, chs) {
   if (S.preset === 'plates') {
     return (Math.abs(p[0]) < 3.6 && Math.abs(p[1]) < 2 && Math.abs(p[2]) < 2.6) ? [0, -1, 0] : [0, 0, 0];
+  }
+  if (S.preset === 'surfacegravity') {
+    // uniform g near a surface — the near-field approximation to 'earth's radial 1/r^2,
+    // same shape as the charged-plates uniform field, just one boundary (the ground) not two
+    return (Math.abs(p[0]) < 3.6 && p[1] > -2 && p[1] < 2.6 && Math.abs(p[2]) < 2.6) ? [0, -1, 0] : [0, 0, 0];
   }
   if (S.preset === 'earth') {
     const r = v3.len(p);
@@ -90,10 +175,21 @@ function fieldAt(p, chs) {
   return E;
 }
 
-/* 14 seed directions: cube corners + axes */
-const SEED_DIRS = [];
-for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) SEED_DIRS.push(v3.norm([sx, sy, sz]));
-[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].forEach(d => SEED_DIRS.push(d));
+/* 14 seed directions: cube corners + axes (full 3D fan-out) */
+const SEED_DIRS_3D = [];
+for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) SEED_DIRS_3D.push(v3.norm([sx, sy, sz]));
+[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].forEach(d => SEED_DIRS_3D.push(d));
+
+/* 2D mode: seeds confined to the y = 0 plane — since every charge (and the
+   test charge) already sits at y = 0, a field line traced from a y = 0 seed
+   never picks up a y-component (d[1] stays 0 the whole way), so this alone
+   is what keeps the whole diagram flat instead of a 3D fan viewed from above. */
+const SEED_DIRS_2D = [];
+for (let i = 0; i < 16; i++) {
+  const a = i / 16 * Math.PI * 2;
+  SEED_DIRS_2D.push([Math.cos(a), 0, Math.sin(a)]);
+}
+function seedDirs() { return S.mode === '2d' ? SEED_DIRS_2D : SEED_DIRS_3D; }
 
 let cachedLines = null;
 function traceLines() {
@@ -102,7 +198,7 @@ function traceLines() {
   const trace = (seed, dir) => {
     const pts = [seed.slice()];
     let p = seed.slice();
-    for (let i = 0; i < 260; i++) {
+    for (let i = 0; i < 420; i++) {
       let E = fieldAt(p, chs);
       let El = v3.len(E);
       if (El < 1e-5) break;
@@ -114,7 +210,10 @@ function traceLines() {
       if (El < 1e-5) break;
       p = v3.add(p, v3.mul(E, dir * h / El));
       pts.push(p.slice());
-      if (v3.len(p) > 9.5) break;
+      // dipole lines seeded near the far/escaping side loop out to r~14 before curving
+      // back in to hit the − charge from the right — a tighter cutoff here clipped
+      // those loops mid-air so they looked like dead-end lines instead of closing.
+      if (v3.len(p) > 15) break;
       if (chs.some(c => v3.len(v3.sub(p, c.p)) < 0.5)) { pts.push(v3.lerp(p, chs.find(c => v3.len(v3.sub(p, c.p)) < 0.75).p, 0.4)); break; }
     }
     return pts;
@@ -127,12 +226,12 @@ function traceLines() {
       // mirror-image ray traced from the other charge — an ugly overlapping pair.
       // The oblique seeds bow apart naturally (real field superposition) and are kept.
       const others = chs.filter(o => o !== c && o.q > 0);
-      for (const d of SEED_DIRS) {
+      for (const d of seedDirs()) {
         if (others.some(o => v3.dot(d, v3.norm(v3.sub(o.p, c.p))) > 0.9)) continue;
         lines.push({ pts: trace(v3.add(c.p, v3.mul(d, 0.5)), 1), fwd: true });
       }
     } else if (!chs.some(o => o.q > 0)) {
-      for (const d of SEED_DIRS) lines.push({ pts: trace(v3.add(c.p, v3.mul(d, 0.5)), -1), fwd: false });
+      for (const d of seedDirs()) lines.push({ pts: trace(v3.add(c.p, v3.mul(d, 0.5)), -1), fwd: false });
     }
   }
   return lines;
@@ -167,11 +266,27 @@ function headOn(pts, frac, fwd, col) {
   eng.arrow(v3.sub(mid, v3.mul(dir, 0.16)), v3.add(mid, v3.mul(dir, 0.16)), { color: col, width: 3.5 });
 }
 
+/* parallel-plate "fringing": right at the plate edge, the field isn't the
+   uniform straight-down line the interior gets — the real (non-ideal-infinite-
+   plate) field bulges outward past the edge and curves back to the other
+   plate. Modelled as a cosmetic bow (not solved from fieldAt's hard-cutoff
+   box), seeded just inboard of the physical edge (±3.6) so it visibly departs
+   from the plate. */
+function edgePlateBow(x0, z) {
+  const pts = [];
+  const N = 24;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    pts.push([x0 + Math.sign(x0) * 0.75 * Math.sin(Math.PI * t), 1.9 - 3.8 * t, z]);
+  }
+  return pts;
+}
+
 function frame() {
   ctx.clearRect(0, 0, W(), H());
   eng.begin(W(), H());
   const chs = charges();
-  const isG = S.preset === 'earth';
+  const isG = S.preset === 'earth' || S.preset === 'surfacegravity';
   const lineCol = isG ? G_COL : E_COL;
 
   /* sources */
@@ -183,10 +298,29 @@ function frame() {
       eng.label([-3.2, -2.8, 0], '− − − − −', { color: NEG, size: 24, lift: 3 });
     }
     if (S.lines) {
-      for (const x of [-2.7, -0.9, 0.9, 2.7]) for (const z of [-1.7, 0, 1.7])
+      // 2D mode looks straight down the z-axis at this preset (see setCamera),
+      // so only draw one z-row — the 3-deep grid would stack into the same
+      // screen column instead of reading as flat.
+      const zs = S.mode === '2d' ? [0] : [-1.7, 0, 1.7];
+      for (const x of [-2.7, -0.9, 0.9, 2.7]) for (const z of zs)
         eng.arrow([x, 1.9, z], [x, -1.9, z], { color: E_COL, width: 3.5 });
+      for (const side of [-1, 1]) for (const z of zs) {
+        const pts = edgePlateBow(side * 3.3, z);
+        eng.line(pts, { color: E_COL, width: 3 });
+        headOn(pts, 0.5, true, E_COL);
+      }
     }
-  } else if (isG) {
+  } else if (S.preset === 'surfacegravity') {
+    // ground = a single boundary (unlike plates' two), uniform g field above it —
+    // the near-surface flat approximation to 'earth's radial 1/r^2 field
+    eng.box([0, -2.2, 0], 3.6, 0.3, 2.6, '#78716c', { stroke: INK, strokeWidth: 2 });
+    if (S.labels) eng.label([-3.2, -2.55, 0], 'ground', { color: '#57534e', size: 24, lift: 3 });
+    if (S.lines) {
+      const zs = S.mode === '2d' ? [0] : [-1.7, 0, 1.7];
+      for (const x of [-2.7, -0.9, 0.9, 2.7]) for (const z of zs)
+        eng.arrow([x, 2.4, z], [x, -2.05, z], { color: G_COL, width: 3.5 });
+    }
+  } else if (S.preset === 'earth') {
     eng.sphere([0, 0, 0], 1.3, '#3b82f6', { stroke: '#1e40af', strokeWidth: 2 });
     // a "continent": a patch drawn flush on the sphere's surface (not a separate
     // embedded sphere — a small sphere whose centre sits inside a bigger one
@@ -195,7 +329,7 @@ function frame() {
     eng.poly(continentPatch([0.35, 0.55, 1.0], 0.55, 1.3), '#22c55e', { depthBias: -0.05 });
     if (S.labels) eng.label([0, -1.9, 0], 'Earth', { color: '#1e40af', size: 20, lift: 3 });
     if (S.lines) {
-      for (const d of SEED_DIRS) {
+      for (const d of seedDirs()) {
         const out = v3.mul(d, 6), inn = v3.mul(d, 1.5);
         eng.line([out, inn], { color: G_COL, width: 3 });
         headOn([out, inn], 0.5, true, G_COL);
@@ -219,13 +353,13 @@ function frame() {
   /* vector grid in the y = 0 plane (or x-y plane for plates) */
   if (S.vectors) {
     const pts = [];
-    if (S.preset === 'plates') {
+    if (S.preset === 'plates' || S.preset === 'surfacegravity') {
       for (const x of [-3, -1.5, 0, 1.5, 3]) for (const y of [-1.2, 0, 1.2]) pts.push([x, y, 0]);
     } else {
       for (let x = -4.5; x <= 4.6; x += 1.5) for (let z = -4.5; z <= 4.6; z += 1.5) pts.push([x, 0, z]);
     }
     for (const p of pts) {
-      if (chs.some(c => v3.len(v3.sub(p, c.p)) < 0.9) || (isG && v3.len(p) < 1.8)) continue;
+      if (chs.some(c => v3.len(v3.sub(p, c.p)) < 0.9) || (S.preset === 'earth' && v3.len(p) < 1.8)) continue;
       const E = fieldAt(p, chs);
       const El = v3.len(E);
       if (El < 0.004) continue;
@@ -236,15 +370,16 @@ function frame() {
 
   /* test charge / test mass */
   let Emag = 0, Fmag = 0;
-  if (S.test) {
-    const tp = [S.tx, isG || S.preset === 'plates' ? 0 : 0, S.tz];
-    if (S.preset === 'plates') { tp[1] = S.tz * 0.4; tp[2] = 0; } // slide vertically between plates
+  if (S.testCharge !== 0) {
+    const pos = testChargePos();
+    const tp = [pos.x, 0, pos.z];
+    if (S.preset === 'plates' || S.preset === 'surfacegravity') { tp[1] = pos.z * 0.4; tp[2] = 0; } // slide vertically
     const E = v3.mul(fieldAt(tp, chs), S.Q);
     Emag = v3.len(E);
-    const F = v3.mul(E, S.testSign * (isG ? Math.abs(S.testSign) : 1));
+    const F = v3.mul(E, S.testCharge * (isG ? Math.abs(S.testCharge) : 1));
     Fmag = v3.len(F);
-    const col = isG ? '#a16207' : (S.testSign > 0 ? POS : NEG);
-    eng.sphere(tp, 0.28, isG ? '#a16207' : lighten(col, 0.3), { label: isG ? 'm' : (S.testSign > 0 ? '+' : '−'), stroke: INK, strokeWidth: 2 });
+    const col = isG ? '#a16207' : (S.testCharge > 0 ? POS : NEG);
+    eng.sphere(tp, 0.28, isG ? '#a16207' : lighten(col, 0.3), { label: isG ? 'm' : (S.testCharge > 0 ? '+' : '−'), stroke: INK, strokeWidth: 2 });
     if (Fmag > 0.004) {
       const fhat = v3.norm(isG ? E : F);
       const flen = 0.5 + Math.min(2.2, Fmag * 3);
@@ -254,16 +389,28 @@ function frame() {
 
   eng.flush(ctx);
 
-  roE.set(S.preset === 'plates' ? 'uniform' : (Emag * 10).toFixed(1) + ' N/C');
+  roE.set((S.preset === 'plates' || S.preset === 'surfacegravity') ? 'uniform' : (Emag * 10).toFixed(1) + ' N/C');
   roF.set((Fmag * 10).toFixed(1) + ' N');
 
+  function pointFoot() {
+    const on1 = S.charge1 !== 0, on2 = S.charge2 !== 0;
+    if (on1 && on2) {
+      return S.charge1 !== S.charge2
+        ? 'Lines leave <b style="color:' + POS + '">+</b> and end on <b style="color:' + NEG + '">−</b>. They never cross!'
+        : 'Like charges: lines push apart — there is a <b>neutral point</b> midway where E = 0';
+    }
+    if (on1 || on2) {
+      return (on1 ? S.charge1 : S.charge2) > 0
+        ? 'Field lines point <b>away</b> from positive charge — the direction a small + test charge would be pushed. &nbsp;E = F / q'
+        : 'Field lines point <b>towards</b> negative charge. A + test charge is pulled inward. &nbsp;E = F / q';
+    }
+    return 'Turn on <b>Charge 1</b> and/or <b>Charge 2</b> above to create a field.';
+  }
   const foots = {
-    'single+': 'Field lines point <b>away</b> from positive charge — the direction a small + test charge would be pushed. &nbsp;E = F / q',
-    'single-': 'Field lines point <b>towards</b> negative charge. A + test charge is pulled inward. &nbsp;E = F / q',
-    'dipole': 'Lines leave <b style="color:' + POS + '">+</b> and end on <b style="color:' + NEG + '">−</b>. They never cross!',
-    'twoplus': 'Like charges: lines push apart — there is a <b>neutral point</b> midway where E = 0',
+    'point': pointFoot(),
     'plates': 'Oppositely charged plates make a <b>uniform field</b>: &nbsp;E = V / d &nbsp;·&nbsp; F = qE &nbsp;·&nbsp; ΔE<sub>p</sub> = Eqd',
-    'earth': 'Same idea, different field: mass feels <b>F = mg</b> in a gravity field, charge feels <b>F = qE</b> in an electric field'
+    'earth': 'Same idea, different field: mass feels <b>F = mg</b> in a gravity field, charge feels <b>F = qE</b> in an electric field',
+    'surfacegravity': 'Near a surface, gravity looks <b>uniform</b> — just like the field between charged plates. g is ~constant close to the ground; it only becomes radial far out (see "Gravity (Earth)")'
   };
   foot.set(foots[S.preset]);
   requestAnimationFrame(frame);
