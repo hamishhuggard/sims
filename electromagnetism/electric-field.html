@@ -334,7 +334,7 @@ function traceLines() {
   const trace = (seed, dir) => {
     const pts = [seed.slice()];
     let p = seed.slice();
-    for (let i = 0; i < 420; i++) {
+    for (let i = 0; i < 2200; i++) {
       let E = fieldAt(p, chs);
       let El = v3.len(E);
       if (El < 1e-5) break;
@@ -346,10 +346,13 @@ function traceLines() {
       if (El < 1e-5) break;
       p = v3.add(p, v3.mul(E, dir * h / El));
       pts.push(p.slice());
-      // dipole lines seeded near the far/escaping side loop out to r~14 before curving
-      // back in to hit the − charge from the right — a tighter cutoff here clipped
-      // those loops mid-air so they looked like dead-end lines instead of closing.
-      if (v3.len(p) > 15) break;
+      // dipole lines seeded near the far/escaping side loop out before curving back in
+      // to hit the − charge from the right — the closer a seed is to the exact
+      // escaping axis, the further out it has to swing before the asymmetry between
+      // the near and far charge is enough to turn it around (the two seeds flanking
+      // the axis loop out past r=50). A tight cutoff here just clips those loops
+      // mid-air so they look like dead-end lines instead of closing.
+      if (v3.len(p) > 60) break;
       if (chs.some(c => v3.len(v3.sub(p, c.p)) < 0.5)) { pts.push(v3.lerp(p, chs.find(c => v3.len(v3.sub(p, c.p)) < 0.75).p, 0.4)); break; }
     }
     return pts;
@@ -368,6 +371,15 @@ function traceLines() {
       }
     } else if (!chs.some(o => o.q > 0)) {
       for (const d of seedDirs()) lines.push({ pts: trace(v3.add(c.p, v3.mul(d, 0.5)), -1), fwd: false });
+    } else {
+      // a dipole's − charge gets most of its incoming lines from the + charge's
+      // own seeds curving around (see the loop/cutoff comment above), but none
+      // of those land exactly opposite the + charge — the field there is exactly
+      // axial (by symmetry) so no oblique seed ever traces along it. Seed that
+      // direction explicitly or the far side of the − charge is left with a gap.
+      const other = chs.find(o => o.q > 0);
+      const away = v3.norm(v3.sub(c.p, other.p));
+      lines.push({ pts: trace(v3.add(c.p, v3.mul(away, 0.5)), -1), fwd: false });
     }
   }
   return lines;
@@ -478,6 +490,27 @@ function dimensionD() {
     }
   }
   eng.label([x, 0, z], 'd', { color: INK, size: 22, lift: 5.4 });
+}
+
+/* the force arrow's head can look like it's landed *inside* a source sphere
+   (planet / point charge) even when its true 3D position clears the sphere by
+   a comfortable margin — perspective flattens that gap away on screen, most
+   visibly in the 3D orbit view but also for a close test object in 2D. Shrink
+   the arrow, rather than trusting 3D distance alone, until its head's
+   *projected* position clears every source sphere's projected silhouette. */
+function clampHeadToSpheres(tp, fhat, flen, spheres) {
+  for (let i = 0; i < 24 && flen > 0.15; i++) {
+    const to = v3.add(tp, v3.mul(fhat, 0.34 + flen));
+    const toProj = eng.project(to);
+    const blocked = spheres.some(sp => {
+      const c = eng.project(sp.p);
+      const r = sp.r * c.s * eng.cam.focal * Math.min(W(), H()) / eng.cam.dist;
+      return Math.hypot(toProj.x - c.x, toProj.y - c.y) < r + 24;
+    });
+    if (!blocked) break;
+    flen *= 0.88;
+  }
+  return Math.max(flen, 0.15);
 }
 
 function frame() {
@@ -610,16 +643,27 @@ function frame() {
     eng.sphere(tp, 0.28, isG ? '#a16207' : lighten(col, 0.3), { label: isG ? 'm' : (S.testCharge > 0 ? '+' : '−'), stroke: INK, strokeWidth: 2 });
     if (Fmag > 0.004) {
       const fhat = v3.norm(isG ? E : F);
-      const flen = 0.5 + Math.min(2.2, Fmag * 3);
-      const from = v3.add(tp, v3.mul(fhat, 0.34)), to = v3.add(tp, v3.mul(fhat, 0.34 + flen));
+      const flenWant = 0.5 + Math.min(2.2, Fmag * 3);
+      let flen = flenWant;
       const uniform = S.preset === 'plates' || S.preset === 'surfacegravity';
+      if (!uniform) {
+        const spheres = S.preset === 'earth' ? [{ p: [0, 0, 0], r: 1.3 }] : chs.map(c => ({ p: c.p, r: 0.5 }));
+        flen = clampHeadToSpheres(tp, fhat, flenWant, spheres);
+      }
+      const from = v3.add(tp, v3.mul(fhat, 0.34)), to = v3.add(tp, v3.mul(fhat, 0.34 + flen));
       // in the uniform cells the arrow is long enough to punch through the far
       // plate / bury its head in the grass — stop it at the boundary instead,
       // and label it beside the shaft, since a label past the head would land
       // inside the plate / underground too
       if (uniform) to[1] = Math.max(-U.gap + 0.18, Math.min(U.gap - 0.18, to[1]));
-      eng.arrow(from, to, { color: F_COL, width: 5, label: (S.labels && !uniform) ? 'F' : '' });
-      if (S.labels && uniform) eng.label(v3.lerp(from, to, 0.5), 'F', { color: F_COL, size: 24, dx: 24, lift: 1.4 });
+      // a close test object clamps the head right up against the source
+      // sphere, leaving no clearance for a label past it either — anchor the
+      // label back at the tail (always the side away from the source) instead
+      const nearSource = !uniform && flen < flenWant - 1e-6;
+      eng.arrow(from, to, { color: F_COL, width: 5, label: (S.labels && !uniform && !nearSource) ? 'F' : '' });
+      if (S.labels && (uniform || nearSource)) {
+        eng.label(uniform ? v3.lerp(from, to, 0.5) : from, 'F', { color: F_COL, size: 24, dx: 24, lift: 1.4 });
+      }
     }
   }
 
