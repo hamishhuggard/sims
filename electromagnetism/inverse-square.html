@@ -13,7 +13,8 @@
 <script src="../lib/engine3d.js"></script>
 <script>
 'use strict';
-const INK = '#1a1a2e', ACCENT = '#2563eb', SPARK = '#d97706', SLATE = '#475569', GOLD = '#facc15';
+const INK = '#1a1a2e', ACCENT = '#2563eb', SPARK = '#d97706', SLATE = '#475569';
+const IMPACT_DURATION = 0.4; // s, lifetime of a localized impact flash
 
 const SOURCE_R = 0.35;      // radius of the emitting sphere
 const SQUARE_HALF = 0.6;    // fixed half-side of the detector square (its area never changes)
@@ -22,12 +23,54 @@ const MAX_DIST = 9.5;       // sparks vanish past this distance
 const R_MIN = 2, R_MAX = 8;
 const WINDOW = 2.5;         // rolling window (s) for the measured hit rate
 
+/* per-skin theming: same 1/r^2 physics, different framing/colours/labels */
+const SKINS = {
+  light: {
+    label: 'Sun / light',
+    sourceLabel: 'The Sun',
+    sourceColor: '#f59e0b',
+    sourceMark: null,
+    quantaName: 'photons',
+    quantaColor: '#facc15',
+    detectorLabel: 'light detector',
+    footer: 'Light spreads out equally in <b>every direction</b> from the Sun — the fixed-size detector catches a shrinking share of photons as $r$ grows: &nbsp;<b>intensity $\\propto 1/r^2$</b>'
+  },
+  gravity: {
+    label: 'Planet / gravity',
+    sourceLabel: 'The Planet',
+    sourceColor: '#0ea5e9',
+    sourceMark: null,
+    quantaName: 'field lines',
+    quantaColor: '#7c3aed',
+    detectorLabel: 'test mass',
+    footer: 'Gravity spreads out equally in <b>every direction</b> from the planet — the fixed-size test mass feels a shrinking share of the field as $r$ grows: &nbsp;<b>force $\\propto 1/r^2$</b>'
+  },
+  electro: {
+    label: 'Proton / electrostatics',
+    sourceLabel: 'The Proton',
+    sourceColor: '#e63946',
+    sourceMark: '+',
+    quantaName: 'field lines',
+    quantaColor: '#ea580c',
+    detectorLabel: 'field sensor',
+    footer: 'An electric field spreads out equally in <b>every direction</b> from the proton — the fixed-size sensor catches a shrinking share of field lines as $r$ grows: &nbsp;<b>field strength $\\propto 1/r^2$</b>'
+  }
+};
+
 const S = {
+  skin: 'light',
   rate: 100, sparkSize: 0.1, R: 4,
   showSparks: true, showSphere: true, showSquare: true, showPlot: true
 };
 
 const ui = SimUI({ back: '../index.html', title: 'Inverse Square Law', subtitle: 'Why a spreading flux falls off as $1/r^2$ — drag to orbit, scroll to zoom' });
+
+const gk = ui.group('Scenario');
+ui.segment(gk, null, [
+  { value: 'light', label: 'Sun / light' },
+  { value: 'gravity', label: 'Planet / gravity' },
+  { value: 'electro', label: 'Proton / electrostatics' }
+], 'light', v => { S.skin = v; });
 
 const ge = ui.group('Emission');
 ui.slider(ge, 'Spark rate', { min: 20, max: 300, step: 10, value: 100, fmt: v => v.toFixed(0) + ' /s' }, v => S.rate = v);
@@ -66,6 +109,11 @@ function mixHex(a, b, t) {
   return '#' + [r, g, bl].map(x => x.toString(16).padStart(2, '0')).join('');
 }
 
+function hexRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255].join(',');
+}
+
 function randomDir() {
   let x, y, z, len2;
   do { x = Math.random() * 2 - 1; y = Math.random() * 2 - 1; z = Math.random() * 2 - 1; len2 = x * x + y * y + z * z; } while (len2 > 1 || len2 < 1e-6);
@@ -76,7 +124,8 @@ function randomDir() {
 function testHit(dir, R) {
   const u = R * v3.dot(dir, T1);
   const vv = R * v3.dot(dir, T2);
-  return v3.dot(dir, N) > 0 && Math.abs(u) <= SQUARE_HALF && Math.abs(vv) <= SQUARE_HALF;
+  if (v3.dot(dir, N) <= 0 || Math.abs(u) > SQUARE_HALF || Math.abs(vv) > SQUARE_HALF) return null;
+  return v3.add(v3.add(v3.mul(N, R), v3.mul(T1, u)), v3.mul(T2, vv));
 }
 
 function theoreticalRate(r) { return S.rate * SQUARE_AREA / (4 * Math.PI * r * r); }
@@ -93,8 +142,8 @@ function circleRing(r, axis) {
 }
 
 let sparks = [];
+let impacts = []; // { pos, age, seed } — localized flash at each detector hit point
 let acc = 0;
-let flash = 0;
 let simT = 0;
 const hitTimes = [];
 const histSamples = [];
@@ -115,9 +164,10 @@ function stepPhysics(dt) {
     sp.prevDist = sp.dist;
     sp.dist += SPEED * dt;
     if (sp.prevDist < S.R && sp.dist >= S.R) {
-      if (testHit(sp.dir, S.R)) {
+      const hitPos = testHit(sp.dir, S.R);
+      if (hitPos) {
         hitTimes.push(simT);
-        flash = 1;
+        impacts.push({ pos: hitPos, age: 0, seed: Math.random() * Math.PI * 2 });
         sparks.splice(i, 1);
         continue;
       }
@@ -125,6 +175,10 @@ function stepPhysics(dt) {
     if (sp.dist > MAX_DIST) sparks.splice(i, 1);
   }
   while (hitTimes.length && simT - hitTimes[0] > WINDOW * 2) hitTimes.shift();
+  for (let i = impacts.length - 1; i >= 0; i--) {
+    impacts[i].age += dt;
+    if (impacts[i].age > IMPACT_DURATION) impacts.splice(i, 1);
+  }
 
   if (simT - lastHistT > 0.15) {
     lastHistT = simT;
@@ -196,7 +250,7 @@ let lastT = 0;
 function frame(tms) {
   const t = tms / 1000, dt = Math.min(t - lastT, 0.04); lastT = t;
   simT += dt;
-  flash = Math.max(0, flash - dt * 4);
+  const skin = SKINS[S.skin];
 
   stepPhysics(dt);
 
@@ -226,23 +280,36 @@ function frame(tms) {
     const p10 = v3.add(center, v3.add(v3.mul(T1, SQUARE_HALF), v3.mul(T2, -SQUARE_HALF)));
     const p11 = v3.add(center, v3.add(v3.mul(T1, SQUARE_HALF), v3.mul(T2, SQUARE_HALF)));
     const p01 = v3.add(center, v3.add(v3.mul(T1, -SQUARE_HALF), v3.mul(T2, SQUARE_HALF)));
-    if (flash > 0.05) {
-      eng.sphere(center, 0.3 + flash * 0.6, 'rgba(250,204,21,' + (0.35 * flash).toFixed(3) + ')', { highlight: 'rgba(250,204,21,0)' });
+    eng.poly([p00, p10, p11, p01], mixHex(SLATE, skin.quantaColor, 0.15), { stroke: INK, strokeWidth: 2 });
+    eng.label(center, skin.detectorLabel + ' (1 m²)', { color: SLATE, size: 14, dy: -26, lift: 3 });
+
+    /* localized impact flash — a brief burst right where each spark actually hit, not the whole square */
+    const flashRGB = hexRgb(skin.quantaColor);
+    for (const im of impacts) {
+      const ft = im.age / IMPACT_DURATION; // 0..1
+      const alpha = Math.max(0, 1 - ft);
+      const r = 0.05 + ft * 0.2;
+      eng.sphere(im.pos, r, 'rgba(' + flashRGB + ',' + (0.6 * alpha).toFixed(3) + ')', { highlight: 'rgba(' + flashRGB + ',0)' });
+      const rayLen = 0.05 + (1 - ft) * 0.18;
+      for (let k = 0; k < 5; k++) {
+        const ang = (k / 5) * Math.PI * 2 + im.seed;
+        const rayDir = v3.add(v3.mul(T1, Math.cos(ang)), v3.mul(T2, Math.sin(ang)));
+        eng.line([im.pos, v3.add(im.pos, v3.mul(rayDir, rayLen))], { color: skin.quantaColor, width: 2 });
+      }
     }
-    eng.poly([p00, p10, p11, p01], mixHex(SLATE, GOLD, flash), { stroke: INK, strokeWidth: 2 });
-    eng.label(center, 'detector (1 m²)', { color: SLATE, size: 14, dy: -26, lift: 3 });
   }
 
   /* emitting sphere */
-  eng.sphere([0, 0, 0], SOURCE_R, ACCENT, { stroke: INK, strokeWidth: 2 });
+  eng.sphere([0, 0, 0], SOURCE_R, skin.sourceColor, { stroke: INK, strokeWidth: 2, label: skin.sourceMark || undefined });
+  eng.label([0, 0, 0], skin.sourceLabel, { color: SLATE, size: 14, dy: -34, lift: 3 });
 
   /* sparks */
   if (S.showSparks) {
     for (const sp of sparks) {
       const pos = v3.mul(sp.dir, SOURCE_R + sp.dist);
       const posPrev = v3.mul(sp.dir, SOURCE_R + sp.prevDist);
-      eng.line([posPrev, pos], { color: SPARK, width: 3 });
-      eng.sphere(pos, S.sparkSize, SPARK, { stroke: null });
+      eng.line([posPrev, pos], { color: skin.quantaColor, width: 3 });
+      eng.sphere(pos, S.sparkSize, skin.quantaColor, { stroke: null });
     }
   }
 
@@ -252,7 +319,7 @@ function frame(tms) {
   const theory = theoreticalRate(S.R), measured = measuredRate();
   roTheory.set(theory.toFixed(2) + ' /s');
   roMeasured.set(measured.toFixed(2) + ' /s');
-  foot.set('Sparks fly out equally in <b>every direction</b> — the fixed-size square catches a shrinking share of them as $r$ grows: &nbsp;<b>rate $\\propto 1/r^2$</b>');
+  foot.set(skin.footer);
 
   requestAnimationFrame(frame);
 }
